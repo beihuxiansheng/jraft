@@ -70,7 +70,7 @@ public class RaftServer implements RaftMessageHandler {
 	}
 	
 	@Override
-	public RaftResponseMessage processRequest(RaftRequestMessage request) {
+	public synchronized RaftResponseMessage processRequest(RaftRequestMessage request) {
 		this.logger.debug(
 				"Receive a %s message from %d with LastLogIndex=%d, LastLogTerm=%d, EntriesLength=%d, CommitIndex=%d and Term=%d", 
 				request.getMessageType().toString(),
@@ -80,13 +80,11 @@ public class RaftServer implements RaftMessageHandler {
 				request.getLogEntries() == null ? 0 : request.getLogEntries().length,
 				request.getCommitIndex(),
 				request.getTerm());
-		synchronized(this){
-			if(request.getMessageType() != RaftMessageType.ClientRequest){
-				// we allow the server to be continue after term updated to save a round message
-				this.updateTerm(request.getTerm());
-			}
+		if(request.getMessageType() != RaftMessageType.ClientRequest){
+			// we allow the server to be continue after term updated to save a round message
+			this.updateTerm(request.getTerm());
 		}
-		
+	
 		RaftResponseMessage response = null;
 		if(request.getMessageType() == RaftMessageType.AppendEntriesRequest){
 			response = this.handleAppendEntriesRequest(request);
@@ -279,7 +277,7 @@ public class RaftServer implements RaftMessageHandler {
 		}
 	}
 	
-	private void handlePeerResponse(RaftResponseMessage response, Throwable error, RequestContext context){
+	private synchronized void handlePeerResponse(RaftResponseMessage response, Throwable error, RequestContext context){
 		if(error != null){
 			this.logger.info("peer response error: %s", error.getMessage());
 			
@@ -295,26 +293,24 @@ public class RaftServer implements RaftMessageHandler {
 				String.valueOf(response.isAccepted()),
 				response.getTerm(),
 				response.getNextIndex());
-		synchronized(this){
-			// If term is updated no need to proceed
-			if(this.updateTerm(response.getTerm())){
-				return;
-			}
-			
-			// Ignore the response that with lower term for safety
-			if(response.getTerm() < this.state.getTerm()){
-				this.logger.info("Received a peer response from %d that with lower term value %d v.s. %d", response.getSource(), response.getTerm(), this.state.getTerm());
-				return;
-			}
-			
-			if(response.getMessageType() == RaftMessageType.RequestVoteResponse){
-				this.handleVotingResponse(response, context);
-			}else if(response.getMessageType() == RaftMessageType.AppendEntriesResponse){
-				this.handleAppendEntriesResponse(response, context);
-			}else{
-				this.logger.error("Received an unexpected message %s for response, system exits.", response.getMessageType().toString());
-				System.exit(-1);
-			}
+		// If term is updated no need to proceed
+		if(this.updateTerm(response.getTerm())){
+			return;
+		}
+		
+		// Ignore the response that with lower term for safety
+		if(response.getTerm() < this.state.getTerm()){
+			this.logger.info("Received a peer response from %d that with lower term value %d v.s. %d", response.getSource(), response.getTerm(), this.state.getTerm());
+			return;
+		}
+		
+		if(response.getMessageType() == RaftMessageType.RequestVoteResponse){
+			this.handleVotingResponse(response, context);
+		}else if(response.getMessageType() == RaftMessageType.AppendEntriesResponse){
+			this.handleAppendEntriesResponse(response, context);
+		}else{
+			this.logger.error("Received an unexpected message %s for response, system exits.", response.getMessageType().toString());
+			System.exit(-1);
 		}
 	}
 	
@@ -381,22 +377,20 @@ public class RaftServer implements RaftMessageHandler {
 		}
 	}
 	
-	private void handleHeartbeatTimeout(PeerServer peer){
+	private synchronized void handleHeartbeatTimeout(PeerServer peer){
 		this.logger.debug("Heartbeat timeout for %d", peer.getId());
-		synchronized(this){
-			if(this.role == ServerRole.Leader){
-				this.requestAppendEntries(false);
-				synchronized(peer){
-					if(peer.isHeartbeatEnabled()){
-						// Schedule another heartbeat if heartbeat is still enabled 
-						peer.setHeartbeatTask(this.scheduler.schedule(peer.getHeartbeartHandler(), peer.getCurrentHeartbeatInterval(), TimeUnit.MILLISECONDS));
-					}else{
-						this.logger.debug("heartbeat is disabled for peer %d", peer.getId());
-					}
+		if(this.role == ServerRole.Leader){
+			this.requestAppendEntries(false);
+			synchronized(peer){
+				if(peer.isHeartbeatEnabled()){
+					// Schedule another heartbeat if heartbeat is still enabled 
+					peer.setHeartbeatTask(this.scheduler.schedule(peer.getHeartbeartHandler(), peer.getCurrentHeartbeatInterval(), TimeUnit.MILLISECONDS));
+				}else{
+					this.logger.debug("heartbeat is disabled for peer %d", peer.getId());
 				}
-			}else{
-				this.logger.info("Receive a heartbeat event for %d while no longer as a leader", peer.getId());
 			}
+		}else{
+			this.logger.info("Receive a heartbeat event for %d while no longer as a leader", peer.getId());
 		}
 	}
 	
