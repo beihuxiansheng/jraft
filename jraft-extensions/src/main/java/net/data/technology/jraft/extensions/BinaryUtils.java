@@ -1,7 +1,14 @@
 package net.data.technology.jraft.extensions;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.List;
 
+import org.apache.log4j.LogManager;
+
+import net.data.technology.jraft.LogEntry;
 import net.data.technology.jraft.RaftRequestMessage;
 import net.data.technology.jraft.RaftResponseMessage;
 
@@ -53,6 +60,47 @@ public class BinaryUtils {
 	}
 	
 	public static byte[] messageToBytes(RaftRequestMessage request){
-		return null;
+		LogEntry[] logEntries = request.getLogEntries();
+		int logSize = 0;
+		List<byte[]> buffersForLogs = null;
+		if(logEntries != null && logEntries.length > 0){
+			buffersForLogs = new ArrayList<byte[]>(logEntries.length);
+			for(LogEntry logEntry : logEntries){
+				byte[] logData = logEntryToBytes(logEntry);
+				logSize += logData.length;
+				buffersForLogs.add(logData);
+			}
+		}
+		
+		ByteBuffer requestBuffer = ByteBuffer.allocate(45 + logSize);
+		requestBuffer.put(request.getMessageType().toByte());
+		requestBuffer.put(intToBytes(request.getSource()));
+		requestBuffer.put(intToBytes(request.getDestination()));
+		requestBuffer.put(longToBytes(request.getTerm()));
+		requestBuffer.put(longToBytes(request.getLastLogTerm()));
+		requestBuffer.put(longToBytes(request.getLastLogIndex()));
+		requestBuffer.put(longToBytes(request.getCommitIndex()));
+		requestBuffer.put(intToBytes(logSize));
+		if(buffersForLogs != null){
+			for(byte[] logData : buffersForLogs){
+				requestBuffer.put(logData);
+			}
+		}
+		
+		return requestBuffer.array();
+	}
+	
+	public static byte[] logEntryToBytes(LogEntry logEntry){
+		ByteArrayOutputStream output = new ByteArrayOutputStream();
+		try{
+			output.write(longToBytes(logEntry.getTerm()));
+			output.write(intToBytes(logEntry.getValue().length));
+			output.write(logEntry.getValue());
+			output.flush();
+			return output.toByteArray();
+		}catch(IOException exception){
+			LogManager.getLogger("BinaryUtil").error("failed to serialize LogEntry to memory", exception);
+			throw new RuntimeException("Running into bad situation, where memory may not be sufficient", exception);
+		}
 	}
 }
