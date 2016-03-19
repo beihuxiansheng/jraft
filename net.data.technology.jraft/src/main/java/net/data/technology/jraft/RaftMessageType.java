@@ -60,7 +60,7 @@ public enum RaftMessageType {
 
 	public abstract byte toByte();
 
-	public RaftMessageType fromByte(byte value) {
+	public static RaftMessageType fromByte(byte value) {
 		switch (value) {
 		case 1:
 			return RequestVoteRequest;

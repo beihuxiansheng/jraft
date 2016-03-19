@@ -9,11 +9,15 @@ import java.util.List;
 import org.apache.log4j.LogManager;
 
 import net.data.technology.jraft.LogEntry;
+import net.data.technology.jraft.RaftMessageType;
 import net.data.technology.jraft.RaftRequestMessage;
 import net.data.technology.jraft.RaftResponseMessage;
 
 public class BinaryUtils {
 
+	public static final int RAFT_RESPONSE_HEADER_SIZE = Integer.BYTES * 2 + Long.BYTES * 2 + 2;
+	public static final int RAFT_REQUEST_HEADER_SIZE = Integer.BYTES * 3 + Long.BYTES * 4 + 1;
+	
 	public static byte[] longToBytes(long value){
 		ByteBuffer buffer = ByteBuffer.allocate(Long.BYTES);
 		buffer.putLong(value);
@@ -33,7 +37,7 @@ public class BinaryUtils {
 		return buffer.array();
 	}
 	
-	public static long bytesToInt(byte[] bytes, int offset){
+	public static int bytesToInt(byte[] bytes, int offset){
 		ByteBuffer buffer = ByteBuffer.allocate(Integer.BYTES);
 		buffer.put(bytes, offset, Integer.BYTES);
 		buffer.flip();
@@ -49,7 +53,7 @@ public class BinaryUtils {
 	}
 	
 	public static byte[] messageToBytes(RaftResponseMessage response){
-		ByteBuffer buffer = ByteBuffer.allocate(26);
+		ByteBuffer buffer = ByteBuffer.allocate(RAFT_RESPONSE_HEADER_SIZE);
 		buffer.put(response.getMessageType().toByte());
 		buffer.put(intToBytes(response.getSource()));
 		buffer.put(intToBytes(response.getDestination()));
@@ -57,6 +61,22 @@ public class BinaryUtils {
 		buffer.put(longToBytes(response.getNextIndex()));
 		buffer.put(booleanToByte(response.isAccepted()));
 		return buffer.array();
+	}
+	
+	public static RaftResponseMessage bytesToResponseMessage(byte[] data){
+		if(data == null || data.length != RAFT_RESPONSE_HEADER_SIZE){
+			throw new IllegalArgumentException(String.format("data must have %d bytes for a raft response message", RAFT_RESPONSE_HEADER_SIZE));
+		}
+		
+		ByteBuffer buffer = ByteBuffer.wrap(data);
+		RaftResponseMessage response = new RaftResponseMessage();
+		response.setMessageType(RaftMessageType.fromByte(buffer.get()));
+		response.setSource(buffer.getInt());
+		response.setDestination(buffer.getInt());
+		response.setTerm(buffer.getLong());
+		response.setNextIndex(buffer.getLong());
+		response.setAccepted(buffer.get() == 1);
+		return response;
 	}
 	
 	public static byte[] messageToBytes(RaftRequestMessage request){
@@ -72,7 +92,7 @@ public class BinaryUtils {
 			}
 		}
 		
-		ByteBuffer requestBuffer = ByteBuffer.allocate(45 + logSize);
+		ByteBuffer requestBuffer = ByteBuffer.allocate(RAFT_REQUEST_HEADER_SIZE + logSize);
 		requestBuffer.put(request.getMessageType().toByte());
 		requestBuffer.put(intToBytes(request.getSource()));
 		requestBuffer.put(intToBytes(request.getDestination()));
@@ -90,6 +110,24 @@ public class BinaryUtils {
 		return requestBuffer.array();
 	}
 	
+	public static Pair<RaftRequestMessage, Integer> bytesToRequestMessage(byte[] data){
+		if(data == null || data.length != RAFT_REQUEST_HEADER_SIZE){
+			throw new IllegalArgumentException("invalid request message header.");
+		}
+		
+		ByteBuffer buffer = ByteBuffer.wrap(data);
+		RaftRequestMessage request = new RaftRequestMessage();
+		request.setMessageType(RaftMessageType.fromByte(buffer.get()));
+		request.setSource(buffer.getInt());
+		request.setDestination(buffer.getInt());
+		request.setTerm(buffer.getLong());
+		request.setLastLogTerm(buffer.getLong());
+		request.setLastLogIndex(buffer.getLong());
+		request.setCommitIndex(buffer.getLong());
+		int logDataSize = buffer.getInt();
+		return new Pair<RaftRequestMessage, Integer>(request, logDataSize);
+	}
+	
 	public static byte[] logEntryToBytes(LogEntry logEntry){
 		ByteArrayOutputStream output = new ByteArrayOutputStream();
 		try{
@@ -102,5 +140,24 @@ public class BinaryUtils {
 			LogManager.getLogger("BinaryUtil").error("failed to serialize LogEntry to memory", exception);
 			throw new RuntimeException("Running into bad situation, where memory may not be sufficient", exception);
 		}
+	}
+	
+	public static LogEntry[] bytesToLogEntries(byte[] data){
+		if(data == null || data.length < Long.BYTES + Integer.BYTES){
+			throw new IllegalArgumentException("invalid log entries data");
+		}
+		ByteBuffer buffer = ByteBuffer.wrap(data);
+		List<LogEntry> logEntries = new ArrayList<LogEntry>();
+		while(buffer.hasRemaining()){
+			long term = buffer.getLong();
+			int valueSize = buffer.getInt();
+			byte[] value = new byte[valueSize];
+			if(valueSize > 0){
+				buffer.get(value);
+			}
+			logEntries.add(new LogEntry(term, value));
+		}
+		
+		return logEntries.toArray(new LogEntry[0]);
 	}
 }
