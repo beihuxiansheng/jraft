@@ -10,7 +10,7 @@ public interface SequentialLogStore {
 	
 	/**
 	 * The last log entry in store
-	 * @return null if no log entry in store
+	 * @return a dummy constant entry with value set to null and term set to zero if no log entry in store
 	 */
 	public LogEntry getLastLogEntry();
 	

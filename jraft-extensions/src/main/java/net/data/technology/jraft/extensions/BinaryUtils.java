@@ -25,9 +25,7 @@ public class BinaryUtils {
 	}
 	
 	public static long bytesToLong(byte[] bytes, int offset){
-		ByteBuffer buffer = ByteBuffer.allocate(Long.BYTES);
-		buffer.put(bytes, offset, Long.BYTES);
-		buffer.flip();
+		ByteBuffer buffer = ByteBuffer.wrap(bytes, offset, Long.BYTES);
 		return buffer.getLong();
 	}
 	
@@ -38,9 +36,7 @@ public class BinaryUtils {
 	}
 	
 	public static int bytesToInt(byte[] bytes, int offset){
-		ByteBuffer buffer = ByteBuffer.allocate(Integer.BYTES);
-		buffer.put(bytes, offset, Integer.BYTES);
-		buffer.flip();
+		ByteBuffer buffer = ByteBuffer.wrap(bytes, offset, Integer.BYTES);
 		return buffer.getInt();
 	}
 	

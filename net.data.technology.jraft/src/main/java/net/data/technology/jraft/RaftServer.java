@@ -45,7 +45,7 @@ public class RaftServer implements RaftMessageHandler {
 		this.context = context;
 		this.logger = context.getLoggerFactory().getLogger(this.getClass());
 		this.random = new Random(Calendar.getInstance().getTimeInMillis());
-		this.scheduler = new ScheduledThreadPoolExecutor(configuration.getServers().size() + 1);
+		this.scheduler = new ScheduledThreadPoolExecutor(configuration.getServers().size());
 		this.electionTimeoutTask = new Callable<Void>(){
 
 			@Override
@@ -55,7 +55,9 @@ public class RaftServer implements RaftMessageHandler {
 			}};
 		
 		for(ClusterServer server : configuration.getServers()){
-			this.peers.put(server.getId(), new PeerServer(server, context, peerServer -> this.handleHeartbeatTimeout(peerServer)));
+			if(server.getId() != configuration.getLocalServerId()){
+				this.peers.put(server.getId(), new PeerServer(server, context, peerServer -> this.handleHeartbeatTimeout(peerServer)));
+			}
 		}
 		
 		if(this.state == null){
@@ -256,6 +258,7 @@ public class RaftServer implements RaftMessageHandler {
 			request.setLastLogIndex(this.logStore.getFirstAvailableIndex() - 1);
 			request.setLastLogTerm(lastLogEntry == null ? 0 : lastLogEntry.getTerm());
 			request.setTerm(this.state.getTerm());
+			this.logger.debug("send %s to server %d with term %d", RaftMessageType.RequestVoteRequest.toString(), peer.getId(), this.state.getTerm());
 			peer.SendRequest(request).whenCompleteAsync((RaftResponseMessage response, Throwable error) -> {
 				handlePeerResponse(response, error, requestContext);
 			});
@@ -341,13 +344,13 @@ public class RaftServer implements RaftMessageHandler {
 				
 				peer.setNextLogIndex(peer.getNextLogIndex() - 1);
 			}
-		}
-		
-		// This may not be a leader anymore, such as the response was sent out long time ago
-        // and the role was updated by UpdateTerm call
-        // Try to match up the logs for this peer
-		if(this.role == ServerRole.Leader){
-			this.requestAppendEntries(false);
+			
+			// This may not be a leader anymore, such as the response was sent out long time ago
+	        // and the role was updated by UpdateTerm call
+	        // Try to match up the logs for this peer
+			if(this.role == ServerRole.Leader){
+				this.requestAppendEntries(false);
+			}
 		}
 		
 		// try to commit with this response
@@ -435,7 +438,9 @@ public class RaftServer implements RaftMessageHandler {
 		// stop heartbeat for all peers
 		for(PeerServer server : this.peers.values()){
 			server.enableHeartbeat(false);
-			server.getHeartbeatTask().cancel(false);
+			if(server.getHeartbeatTask() != null){
+				server.getHeartbeatTask().cancel(false);
+			}
 		}
 		
 		this.role = ServerRole.Follower;
