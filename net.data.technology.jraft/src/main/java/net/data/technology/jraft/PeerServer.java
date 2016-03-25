@@ -28,7 +28,7 @@ public class PeerServer {
 		this.maxHeartbeatInterval = context.getRaftParameters().getMaxHeartbeatInterval();
 		this.rpcBackoffInterval = context.getRaftParameters().getRpcFailureBackoff();
 		this.heartbeatTask = null;
-		this.nextLogIndex = 0;
+		this.nextLogIndex = 1;
 		this.heartbeatEnabled = false;
 		PeerServer self = this;
 		this.heartbeatTimeoutHandler = new Callable<Void>(){
@@ -106,7 +106,7 @@ public class PeerServer {
 					}
 					
 					self.slowDownHeartbeating();
-					throw new RpcException(error);
+					throw new RpcException(error, request);
 				});
 	}
 	

@@ -4,7 +4,6 @@ import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.Callable;
@@ -249,7 +248,6 @@ public class RaftServer implements RaftMessageHandler {
 		}
 		
 		LogEntry lastLogEntry = this.logStore.getLastLogEntry();
-		final RequestContext requestContext = new RequestContext(this.peers.size() + 1);
 		for(PeerServer peer : this.peers.values()){
 			RaftRequestMessage request = new RaftRequestMessage();
 			request.setMessageType(RaftMessageType.RequestVoteRequest);
@@ -260,32 +258,31 @@ public class RaftServer implements RaftMessageHandler {
 			request.setTerm(this.state.getTerm());
 			this.logger.debug("send %s to server %d with term %d", RaftMessageType.RequestVoteRequest.toString(), peer.getId(), this.state.getTerm());
 			peer.SendRequest(request).whenCompleteAsync((RaftResponseMessage response, Throwable error) -> {
-				handlePeerResponse(response, error, requestContext);
+				handlePeerResponse(response, error);
 			});
 		}
 	}
 	
-	@SuppressWarnings("unchecked")
 	private void requestAppendEntries(boolean urgentRequest){
-		RequestContext requestContext = new RequestContext(this.peers.size() + 1, new ArrayList<Long>());
-		((List<Long>)requestContext.getState()).add(this.logStore.getFirstAvailableIndex());
-		
 		for(PeerServer peer : this.peers.values()){
 			if(urgentRequest || !peer.isBusy()){
 				peer.SendRequest(this.createAppendEntriesRequest(peer))
 					.whenCompleteAsync((RaftResponseMessage response, Throwable error) -> {
-						handlePeerResponse(response, error, requestContext);
+						handlePeerResponse(response, error);
 					});
 			}
 		}
 	}
 	
-	private synchronized void handlePeerResponse(RaftResponseMessage response, Throwable error, RequestContext context){
+	private synchronized void handlePeerResponse(RaftResponseMessage response, Throwable error){
 		if(error != null){
 			this.logger.info("peer response error: %s", error.getMessage());
 			
 			// we might still be able to commit if there is already a majority set
-			this.tryToCommit(context, 0);
+			if((error instanceof RpcException) && ((RpcException)error).getRequest().getMessageType() == RaftMessageType.AppendEntriesRequest){
+				this.tryToCommit();
+			}
+			
 			return;
 		}
 		
@@ -308,16 +305,16 @@ public class RaftServer implements RaftMessageHandler {
 		}
 		
 		if(response.getMessageType() == RaftMessageType.RequestVoteResponse){
-			this.handleVotingResponse(response, context);
+			this.handleVotingResponse(response);
 		}else if(response.getMessageType() == RaftMessageType.AppendEntriesResponse){
-			this.handleAppendEntriesResponse(response, context);
+			this.handleAppendEntriesResponse(response);
 		}else{
 			this.logger.error("Received an unexpected message %s for response, system exits.", response.getMessageType().toString());
 			System.exit(-1);
 		}
 	}
 	
-	private void handleAppendEntriesResponse(RaftResponseMessage response, RequestContext context){
+	private void handleAppendEntriesResponse(RaftResponseMessage response){
 		PeerServer peer = this.peers.get(response.getSource());
 		if(peer == null){
 			this.logger.info("the response is from an unkonw peer %d", response.getSource());
@@ -354,10 +351,10 @@ public class RaftServer implements RaftMessageHandler {
 		}
 		
 		// try to commit with this response
-		this.tryToCommit(context, response.getNextIndex());
+		this.tryToCommit();
 	}
 	
-	private void handleVotingResponse(RaftResponseMessage response, RequestContext context){
+	private void handleVotingResponse(RaftResponseMessage response){
 		this.votesResponded += 1;
 		if(this.electionCompleted){
 			this.logger.info("Election completed, will ignore the voting result from this server");
@@ -368,12 +365,12 @@ public class RaftServer implements RaftMessageHandler {
 			this.votesGranted += 1;
 		}
 		
-		if(this.votesResponded >= context.getTotalServers()){
+		if(this.votesResponded >= this.peers.size() + 1){
 			this.electionCompleted = true;
 		}
 		
 		// got a majority set of granted votes
-		if(this.votesGranted > context.getTotalServers() / 2){
+		if(this.votesGranted > (this.peers.size() + 1) / 2){
 			this.logger.info("Server is elected as leader for term %d", this.state.getTerm());
 			this.electionCompleted = true;
 			this.becomeLeader();
@@ -383,7 +380,13 @@ public class RaftServer implements RaftMessageHandler {
 	private synchronized void handleHeartbeatTimeout(PeerServer peer){
 		this.logger.debug("Heartbeat timeout for %d", peer.getId());
 		if(this.role == ServerRole.Leader){
-			this.requestAppendEntries(false);
+			if(!peer.isBusy()){
+				peer.SendRequest(this.createAppendEntriesRequest(peer))
+				.whenCompleteAsync((RaftResponseMessage response, Throwable error) -> {
+					handlePeerResponse(response, error);
+				});
+			}
+			
 			synchronized(peer){
 				if(peer.isHeartbeatEnabled()){
 					// Schedule another heartbeat if heartbeat is still enabled 
@@ -463,6 +466,7 @@ public class RaftServer implements RaftMessageHandler {
 	}
 	
 	private void commit(long targetIndex){
+		this.logger.debug("trying to commit index %d", targetIndex);
 		if(targetIndex > this.commitIndex){
 			while(this.commitIndex < targetIndex && this.commitIndex < this.logStore.getFirstAvailableIndex() - 1){
 				long indexToCommit = this.commitIndex + 1;
@@ -524,24 +528,19 @@ public class RaftServer implements RaftMessageHandler {
 		return requestMessage;
 	}
 	
-	@SuppressWarnings("unchecked")
-	private void tryToCommit(RequestContext context, long peerNextIndex){
-		synchronized(context){
-			if(context.getState() instanceof List<?>){
-				List<Long> nextIndexes = (List<Long>)context.getState();
-				nextIndexes.add(peerNextIndex == 0 ? 1 : peerNextIndex);
-				
-				// we have all responses, now try to commit new values
-				if(nextIndexes.size() == context.getTotalServers()){
-					nextIndexes.sort(new Comparator<Long>(){
-
-						@Override
-						public int compare(Long arg0, Long arg1) {
-							return (int)(arg0 - arg1);
-						}});
-					this.commit(nextIndexes.get(context.getTotalServers() / 2) - 1);
-				}
-			}
+	private void tryToCommit(){
+		ArrayList<Long> nextIndexes = new ArrayList<Long>(this.peers.size() + 1);
+		nextIndexes.add(this.logStore.getFirstAvailableIndex());
+		for(PeerServer peer : this.peers.values()){
+			nextIndexes.add(peer.getNextLogIndex());
 		}
+		
+		nextIndexes.sort(new Comparator<Long>(){
+
+			@Override
+			public int compare(Long arg0, Long arg1) {
+				return (int)(arg0.longValue() - arg1.longValue());
+			}});
+		this.commit(nextIndexes.get((this.peers.size() + 1) / 2) - 1);
 	}
 }

@@ -28,9 +28,9 @@ public class RpcTcpClient implements RpcClient {
 	
 	@Override
 	public synchronized CompletableFuture<RaftResponseMessage> send(final RaftRequestMessage request) {
-		this.logger.debug(String.format("tring to send message %s to server %d at endpoint %s", request.getMessageType().toString(), request.getDestination(), this.remote.toString()));
+		this.logger.debug(String.format("trying to send message %s to server %d at endpoint %s", request.getMessageType().toString(), request.getDestination(), this.remote.toString()));
 		final CompletableFuture<RaftResponseMessage> result = new CompletableFuture<RaftResponseMessage>();
-		if(this.connection == null){
+		if(this.connection == null || !this.connection.isOpen()){
 			try{
 				this.connection = AsynchronousSocketChannel.open();
 				this.connection.connect(this.remote, null, handlerFrom((Void v, Object attachment) -> {

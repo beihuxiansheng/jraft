@@ -7,9 +7,6 @@ import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Properties;
-
-import org.apache.log4j.PropertyConfigurator;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -44,12 +41,6 @@ public class App
     		System.out.println("jraft.json does not exist, please create one to hold the configuration");
     		return;
     	}
-    	
-    	// config log4j
-    	Properties log4jProperties = new Properties();
-    	log4jProperties.load(new FileInputStream(baseDir.resolve("log4j.properties").toString()));
-    	log4jProperties.setProperty("log4j.appender.file.File", baseDir.resolve("jraft.log").toString());
-    	PropertyConfigurator.configure(log4jProperties);
     	
     	// load configuration
     	Gson gson = new GsonBuilder().create();

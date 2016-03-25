@@ -10,13 +10,14 @@ import org.apache.log4j.LogManager;
 import org.apache.log4j.Logger;
 
 import net.data.technology.jraft.LogEntry;
+import net.data.technology.jraft.LogValueType;
 import net.data.technology.jraft.SequentialLogStore;
 
 public class FileBasedSequentialLogStore implements SequentialLogStore {
 
 	private static final String LOG_INDEX_FILE = "store.idx";
 	private static final String LOG_STORE_FILE = "store.data";
-	private static final LogEntry zeroEntry = new LogEntry(0, null);
+	private static final LogEntry zeroEntry = new LogEntry();
 	
 	private Logger logger;
 	private RandomAccessFile indexFile;
@@ -45,7 +46,8 @@ public class FileBasedSequentialLogStore implements SequentialLogStore {
 					byte[] lastEntryBuffer = new byte[lastEntrySize];
 					this.dataFile.read(lastEntryBuffer);
 					long term = BinaryUtils.bytesToLong(lastEntryBuffer, 0);
-					this.lastEntry = new LogEntry(term, Arrays.copyOfRange(lastEntryBuffer, Long.BYTES, lastEntrySize));
+					byte valueType = lastEntryBuffer[Long.BYTES];
+					this.lastEntry = new LogEntry(term, Arrays.copyOfRange(lastEntryBuffer, Long.BYTES + 1, lastEntrySize), LogValueType.fromByte(valueType));
 				}
 			}
 			
@@ -82,8 +84,9 @@ public class FileBasedSequentialLogStore implements SequentialLogStore {
 	@Override
 	public synchronized void writeAt(long index, LogEntry logEntry) {
 		try{
-			ByteBuffer buffer = ByteBuffer.allocate(Long.BYTES + logEntry.getValue().length);
+			ByteBuffer buffer = ByteBuffer.allocate(Long.BYTES + 1 + logEntry.getValue().length);
 			buffer.put(BinaryUtils.longToBytes(logEntry.getTerm()));
+			buffer.put(logEntry.getValueType().toByte());
 			buffer.put(logEntry.getValue());
 			
 			// find the positions for index and data files
@@ -147,7 +150,7 @@ public class FileBasedSequentialLogStore implements SequentialLogStore {
 				byte[] logData = new byte[dataSize];
 				this.dataFile.seek(dataStart);
 				this.dataFile.read(logData);
-				entries[i] = new LogEntry(BinaryUtils.bytesToLong(logData, 0), Arrays.copyOfRange(logData, Long.BYTES, logData.length));
+				entries[i] = new LogEntry(BinaryUtils.bytesToLong(logData, 0), Arrays.copyOfRange(logData, Long.BYTES + 1, logData.length), LogValueType.fromByte(logData[Long.BYTES]));
 			}
 			
 			return entries;
@@ -177,7 +180,7 @@ public class FileBasedSequentialLogStore implements SequentialLogStore {
 			this.dataFile.seek(dataPosition);
 			byte[] logData = new byte[(int)(endDataPosition - dataPosition)];
 			this.dataFile.read(logData);
-			return new LogEntry(BinaryUtils.bytesToLong(logData, 0), Arrays.copyOfRange(logData, Long.BYTES, logData.length));
+			return new LogEntry(BinaryUtils.bytesToLong(logData, 0), Arrays.copyOfRange(logData, Long.BYTES + 1, logData.length), LogValueType.fromByte(logData[Long.BYTES]));
 		}catch(IOException exception){
 			this.logger.error("failed to read files to get the specified entry");
 			throw new RuntimeException(exception.getMessage(), exception);

@@ -9,6 +9,7 @@ import java.util.List;
 import org.apache.log4j.LogManager;
 
 import net.data.technology.jraft.LogEntry;
+import net.data.technology.jraft.LogValueType;
 import net.data.technology.jraft.RaftMessageType;
 import net.data.technology.jraft.RaftRequestMessage;
 import net.data.technology.jraft.RaftResponseMessage;
@@ -128,6 +129,7 @@ public class BinaryUtils {
 		ByteArrayOutputStream output = new ByteArrayOutputStream();
 		try{
 			output.write(longToBytes(logEntry.getTerm()));
+			output.write(logEntry.getValueType().toByte());
 			output.write(intToBytes(logEntry.getValue().length));
 			output.write(logEntry.getValue());
 			output.flush();
@@ -146,12 +148,13 @@ public class BinaryUtils {
 		List<LogEntry> logEntries = new ArrayList<LogEntry>();
 		while(buffer.hasRemaining()){
 			long term = buffer.getLong();
+			byte valueType = buffer.get();
 			int valueSize = buffer.getInt();
 			byte[] value = new byte[valueSize];
 			if(valueSize > 0){
 				buffer.get(value);
 			}
-			logEntries.add(new LogEntry(term, value));
+			logEntries.add(new LogEntry(term, value, LogValueType.fromByte(valueType)));
 		}
 		
 		return logEntries.toArray(new LogEntry[0]);

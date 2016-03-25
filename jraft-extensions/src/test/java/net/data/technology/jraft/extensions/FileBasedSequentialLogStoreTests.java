@@ -24,7 +24,8 @@ public class FileBasedSequentialLogStoreTests {
 		Files.deleteIfExists(container.resolve("store.idex"));
 		Files.deleteIfExists(container.resolve("store.data"));
 		FileBasedSequentialLogStore store = new FileBasedSequentialLogStore(container.toString());
-		assertTrue(store.getLastLogEntry() == null);
+		assertTrue(store.getLastLogEntry().getTerm() == 0);
+		assertTrue(store.getLastLogEntry().getValue() == null);
 		assertEquals(1, store.getFirstAvailableIndex());
 		assertTrue(store.getLogEntryAt(1) == null);
 		
@@ -84,7 +85,7 @@ public class FileBasedSequentialLogStoreTests {
 		assertTrue(logEntriesEquals(logEntry, store.getLastLogEntry()));
 		
 		store.close();
-		Files.deleteIfExists(container.resolve("store.idex"));
+		Files.deleteIfExists(container.resolve("store.idx"));
 		Files.deleteIfExists(container.resolve("store.data"));
 		Files.deleteIfExists(container);
 	}

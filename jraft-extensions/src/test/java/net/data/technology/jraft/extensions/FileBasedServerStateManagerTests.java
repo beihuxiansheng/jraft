@@ -39,7 +39,8 @@ public class FileBasedServerStateManagerTests {
 		}
 		
 		// clean up
-		Files.deleteIfExists(container.resolve("store.idex"));
+		manager.close();
+		Files.deleteIfExists(container.resolve("store.idx"));
 		Files.deleteIfExists(container.resolve("store.data"));
 		Files.deleteIfExists(container.resolve("server.state"));
 		Files.deleteIfExists(container);
