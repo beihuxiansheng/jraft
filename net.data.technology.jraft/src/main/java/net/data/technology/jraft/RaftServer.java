@@ -24,19 +24,19 @@ public class RaftServer implements RaftMessageHandler {
 	private int votesResponded;
 	private int votesGranted;
 	private boolean electionCompleted;
-	private long commitIndex;
 	private SequentialLogStore logStore;
 	private StateMachine stateMachine;
 	private Logger logger;
 	private Random random;
 	private Callable<Void> electionTimeoutTask;
+	private ClusterConfiguration config;
 	
-	public RaftServer(RaftContext context, ClusterConfiguration configuration){
-		this.id = configuration.getLocalServerId();
-		this.state = context.getServerStateManager().readState(configuration.getLocalServerId());
-		this.logStore = context.getServerStateManager().loadLogStore(configuration.getLocalServerId());
+	public RaftServer(RaftContext context){
+		this.id = context.getServerStateManager().getServerId();
+		this.state = context.getServerStateManager().readState();
+		this.logStore = context.getServerStateManager().loadLogStore();
+		this.config = context.getServerStateManager().loadClusterConfiguration();
 		this.stateMachine = context.getStateMachine();
-		this.commitIndex = 0;
 		this.votesGranted = 0;
 		this.votesResponded = 0;
 		this.leader = -1;
@@ -44,7 +44,7 @@ public class RaftServer implements RaftMessageHandler {
 		this.context = context;
 		this.logger = context.getLoggerFactory().getLogger(this.getClass());
 		this.random = new Random(Calendar.getInstance().getTimeInMillis());
-		this.scheduler = new ScheduledThreadPoolExecutor(configuration.getServers().size());
+		this.scheduler = new ScheduledThreadPoolExecutor(Runtime.getRuntime().availableProcessors());
 		this.electionTimeoutTask = new Callable<Void>(){
 
 			@Override
@@ -53,8 +53,8 @@ public class RaftServer implements RaftMessageHandler {
 				return null;
 			}};
 		
-		for(ClusterServer server : configuration.getServers()){
-			if(server.getId() != configuration.getLocalServerId()){
+		for(ClusterServer server : this.config.getServers()){
+			if(server.getId() != this.id){
 				this.peers.put(server.getId(), new PeerServer(server, context, peerServer -> this.handleHeartbeatTimeout(peerServer)));
 			}
 		}
@@ -151,14 +151,32 @@ public class RaftServer implements RaftMessageHandler {
 				index ++;
 			}
 			
-			// dealing with over writes
+			// dealing with overwrites
 			while(index < this.logStore.getFirstAvailableIndex() && logIndex < logEntries.length){
+				if(index <= this.config.getLogIndex()){
+					// we need to restore the configuration from previous logs
+					ClusterConfiguration newConfig = null;
+					if(this.config.getLastLogIndex() == 0){
+						// reload the configure from server state
+						newConfig = this.context.getServerStateManager().loadClusterConfiguration();
+					}else{
+						LogEntry logEntry = this.logStore.getLogEntryAt(this.config.getLastLogIndex());
+						newConfig = ClusterConfiguration.fromBytes(logEntry.getValue());
+					}
+					
+					this.reconfigure(newConfig);
+				}
 				this.logStore.writeAt(index ++, logEntries[logIndex ++]);
 			}
 			
 			// append the new log entries
 			while(logIndex < logEntries.length){
-				this.logStore.append(logEntries[logIndex ++]);
+				LogEntry logEntry = logEntries[logIndex ++];
+				this.logStore.append(logEntry);
+				if(logEntry.getValueType() == LogValueType.Configuration){
+					ClusterConfiguration newConfig = ClusterConfiguration.fromBytes(logEntry.getValue());
+					this.reconfigure(newConfig);
+				}
 			}
 		}
 		
@@ -183,7 +201,7 @@ public class RaftServer implements RaftMessageHandler {
 		response.setAccepted(grant);
 		if(grant){
 			this.state.setVotedFor(request.getSource());
-			this.context.getServerStateManager().persistState(this.id, this.state);
+			this.context.getServerStateManager().persistState(this.state);
 		}
 		
 		return response;
@@ -228,7 +246,7 @@ public class RaftServer implements RaftMessageHandler {
 		this.votesGranted = 0;
 		this.votesResponded = 0;
 		this.electionCompleted = false;
-		this.context.getServerStateManager().persistState(this.id, this.state);
+		this.context.getServerStateManager().persistState(this.state);
 		this.requestVote();
 		this.restartElectionTimer();
 	}
@@ -237,7 +255,7 @@ public class RaftServer implements RaftMessageHandler {
 		// vote for self
 		this.logger.info("requestVote started with term %d", this.state.getTerm());
 		this.state.setVotedFor(this.id);
-		this.context.getServerStateManager().persistState(this.id, this.state);
+		this.context.getServerStateManager().persistState(this.state);
 		this.votesGranted += 1;
 		this.votesResponded += 1;
 		
@@ -435,6 +453,12 @@ public class RaftServer implements RaftMessageHandler {
 			server.setHeartbeatTask(this.scheduler.schedule(server.getHeartbeartHandler(), server.getCurrentHeartbeatInterval(), TimeUnit.MILLISECONDS));
 		}
 		
+		// if current config is not committed, try to commit it
+		if(this.config.getLogIndex() == 0){
+			this.config.setLogIndex(this.logStore.getFirstAvailableIndex());
+			this.logStore.append(new LogEntry(this.state.getTerm(), this.config.toBytes(), LogValueType.Configuration));
+		}
+		
 		this.requestAppendEntries(true);
 	}
 	
@@ -458,7 +482,7 @@ public class RaftServer implements RaftMessageHandler {
 			this.electionCompleted = false;
 			this.votesGranted = 0;
 			this.votesResponded = 0;
-			this.context.getServerStateManager().persistState(this.id, this.state);
+			this.context.getServerStateManager().persistState(this.state);
 			this.becomeFollower();
 			return true;
 		}
@@ -467,12 +491,21 @@ public class RaftServer implements RaftMessageHandler {
 	}
 	
 	private void commit(long targetIndex){
-		if(targetIndex > this.commitIndex){
-			while(this.commitIndex < targetIndex && this.commitIndex < this.logStore.getFirstAvailableIndex() - 1){
-				long indexToCommit = this.commitIndex + 1;
-				this.stateMachine.commit(indexToCommit, this.logStore.getLogEntryAt(indexToCommit).getValue());
-				this.commitIndex = indexToCommit;
+		if(targetIndex > this.state.getCommitIndex()){
+			while(this.state.getCommitIndex() < targetIndex && this.state.getCommitIndex() < this.logStore.getFirstAvailableIndex() - 1){
+				long indexToCommit = this.state.getCommitIndex() + 1;
+				LogEntry logEntry = this.logStore.getLogEntryAt(indexToCommit);
+				if(logEntry.getValueType() == LogValueType.Application){
+					this.stateMachine.commit(indexToCommit, this.logStore.getLogEntryAt(indexToCommit).getValue());
+				}else if(logEntry.getValueType() == LogValueType.Configuration){
+					this.context.getServerStateManager().saveClusterConfiguration(this.config);
+				}
+				
+				this.state.setCommitIndex(indexToCommit);
 			}
+			
+			// save the commitment state
+			this.context.getServerStateManager().persistState(this.state);
 			
 			// Ask peers to commit the value
 			if(this.role == ServerRole.Leader){
@@ -489,7 +522,7 @@ public class RaftServer implements RaftMessageHandler {
 		
 		synchronized(this){
 			currentNextIndex = this.logStore.getFirstAvailableIndex();
-			commitIndex = this.commitIndex;
+			commitIndex = this.state.getCommitIndex();
 			term = this.state.getTerm();
 		}
 		
@@ -542,5 +575,10 @@ public class RaftServer implements RaftMessageHandler {
 				return (int)(arg0.longValue() - arg1.longValue());
 			}});
 		this.commit(matchedIndexes.get((this.peers.size() + 1) / 2));
+	}
+	
+	private void reconfigure(ClusterConfiguration newConfig){
+		// TODO update the current peer settings and heartbeat settings
+		this.config = newConfig;
 	}
 }

@@ -1,15 +1,11 @@
 package net.data.technology.jraft;
 
 import java.io.BufferedReader;
-import java.io.FileInputStream;
 import java.io.InputStreamReader;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
 
 import net.data.technology.jraft.extensions.FileBasedServerStateManager;
 import net.data.technology.jraft.extensions.Log4jLoggerFactory;
@@ -36,23 +32,15 @@ public class App
     		return;
     	}
     	
-    	Path configPath = baseDir.resolve("jraft.json");
-    	if(!Files.isRegularFile(configPath)){
-    		System.out.println("jraft.json does not exist, please create one to hold the configuration");
-    		return;
-    	}
-    	
-    	// load configuration
-    	Gson gson = new GsonBuilder().create();
-    	ClusterConfiguration config = gson.fromJson(new InputStreamReader(new FileInputStream(configPath.toFile()), "utf-8"), ClusterConfiguration.class);
+    	FileBasedServerStateManager stateManager = new FileBasedServerStateManager(args[1]);
+    	ClusterConfiguration config = stateManager.loadClusterConfiguration();
     	
     	if("client".equalsIgnoreCase(args[0])){
     		executeAsClient(config);
     		return;
     	}
-    	
-    	URI localEndpoint = new URI(config.getLocalServer().getEndpoint());
-    	FileBasedServerStateManager stateManager = new FileBasedServerStateManager(args[1]);
+
+    	URI localEndpoint = new URI(config.getServer(stateManager.getServerId()).getEndpoint());
     	RaftParameters raftParameters = new RaftParameters(5000, 3000, 1500, 500);
     	RaftContext context = new RaftContext(
     			stateManager,
@@ -61,7 +49,7 @@ public class App
     			new RpcTcpListener(localEndpoint.getPort()),
     			new Log4jLoggerFactory(),
     			new RpcTcpClientFactory());
-    	RaftConsensus.run(context, config);
+    	RaftConsensus.run(context);
         System.out.println( "Press any key to exit." );
         System.in.read();
     }

@@ -2,9 +2,15 @@ package net.data.technology.jraft;
 
 public interface ServerStateManager {
 
-	public void persistState(int serverId, ServerState serverState);
+	public ClusterConfiguration loadClusterConfiguration();
 	
-	public ServerState readState(int serverId);
+	public void saveClusterConfiguration(ClusterConfiguration configuration);
 	
-	public SequentialLogStore loadLogStore(int serverId);
+	public void persistState(ServerState serverState);
+	
+	public ServerState readState();
+	
+	public SequentialLogStore loadLogStore();
+	
+	public int getServerId();
 }

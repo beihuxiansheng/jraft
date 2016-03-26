@@ -3,6 +3,7 @@ package net.data.technology.jraft;
 public class ServerState {
 
 	private long term;
+	private long commitIndex;
 	private int votedFor;
 	
 	public long getTerm() {
@@ -23,5 +24,13 @@ public class ServerState {
 	
 	public void increaseTerm(){
 		this.term += 1;
+	}
+
+	public long getCommitIndex() {
+		return commitIndex;
+	}
+
+	public void setCommitIndex(long commitIndex) {
+		this.commitIndex = commitIndex;
 	}
 }

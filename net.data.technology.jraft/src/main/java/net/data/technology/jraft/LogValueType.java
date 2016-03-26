@@ -13,6 +13,18 @@ public enum LogValueType {
 		public byte toByte(){
 			return 2;
 		}
+	},
+	ClusterServer {
+		@Override
+		public byte toByte(){
+			return 3;
+		}
+	},
+	ZippedLogInfo {
+		@Override
+		public byte toByte(){
+			return 4;
+		}
 	};
 	
 	public abstract byte toByte();
@@ -23,6 +35,10 @@ public enum LogValueType {
 			return Application;
 		case 2:
 			return Configuration;
+		case 3:
+			return ClusterServer;
+		case 4:
+			return ZippedLogInfo;
 		default:
 			throw new IllegalArgumentException(String.format("%d is not defined for LogValueType", b));
 		}

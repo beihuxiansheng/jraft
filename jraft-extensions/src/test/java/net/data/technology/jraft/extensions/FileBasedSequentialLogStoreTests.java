@@ -13,6 +13,7 @@ import java.util.Random;
 import org.junit.Test;
 
 import net.data.technology.jraft.LogEntry;
+import net.data.technology.jraft.LogValueType;
 
 public class FileBasedSequentialLogStoreTests {
 
@@ -94,11 +95,12 @@ public class FileBasedSequentialLogStoreTests {
 		byte[] value = new byte[this.random.nextInt(20) + 1];
 		long term = this.random.nextLong();
 		this.random.nextBytes(value);
-		return new LogEntry(term, value);
+		LogValueType type = LogValueType.fromByte((byte)(this.random.nextInt(4) + 1));
+		return new LogEntry(term, value, type);
 	}
 	
 	private static boolean logEntriesEquals(LogEntry entry1, LogEntry entry2){
-		boolean equals = entry1.getTerm() == entry2.getTerm();
+		boolean equals = entry1.getTerm() == entry2.getTerm() && entry1.getValueType() == entry2.getValueType();
 		equals = equals && ((entry1.getValue() != null && entry2.getValue() != null && entry1.getValue().length == entry2.getValue().length) || (entry1.getValue() == null && entry2.getValue() == null));
 		if(entry1.getValue() != null){
 			int i = 0;

@@ -18,7 +18,7 @@ public class RaftClient {
 	public RaftClient(RpcClientFactory rpcClientFactory, ClusterConfiguration configuration, LoggerFactory loggerFactory){
 		this.rpcClientFactory = rpcClientFactory;
 		this.configuration = configuration;
-		this.leaderId = configuration.getLocalServerId();
+		this.leaderId = configuration.getServers().get(0).getId();
 		this.logger = loggerFactory.getLogger(getClass());
 		this.timer = new Timer();
 	}

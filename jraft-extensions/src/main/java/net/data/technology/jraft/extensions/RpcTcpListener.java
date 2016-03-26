@@ -8,6 +8,9 @@ import java.nio.channels.AsynchronousChannelGroup;
 import java.nio.channels.AsynchronousServerSocketChannel;
 import java.nio.channels.AsynchronousSocketChannel;
 import java.nio.channels.CompletionHandler;
+import java.util.Collections;
+import java.util.LinkedList;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.BiConsumer;
@@ -25,10 +28,12 @@ public class RpcTcpListener implements RpcListener {
 	private Logger logger;
 	private AsynchronousServerSocketChannel listener;
 	private ExecutorService executorService;
+	private List<AsynchronousSocketChannel> connections;
 	
 	public RpcTcpListener(int port){
 		this.port = port;
 		this.logger = LogManager.getLogger(getClass());
+		this.connections = Collections.synchronizedList(new LinkedList<AsynchronousSocketChannel>());
 	}
 
 	@Override
@@ -48,11 +53,19 @@ public class RpcTcpListener implements RpcListener {
 	
 	@Override
 	public void stop(){
+		for(AsynchronousSocketChannel connection : this.connections){
+			try{
+				connection.close();
+			}catch(IOException error){
+				logger.info("failed to close connection, but it's fine", error);
+			}
+		}
+		
 		if(this.listener != null){
 			try {
 				this.listener.close();
 			} catch (IOException e) {
-				logger.error("failed to close the listener socket", e);
+				logger.info("failed to close the listener socket", e);
 			}
 			
 			this.listener = null;
@@ -68,6 +81,7 @@ public class RpcTcpListener implements RpcListener {
 		try{
 			this.listener.accept(messageHandler, AsyncUtility.handlerFrom(
 					(AsynchronousSocketChannel connection, RaftMessageHandler handler) -> {
+						connections.add(connection);
 						acceptRequests(handler);
 						readRequest(connection, handler);
 					}, 
@@ -145,17 +159,18 @@ public class RpcTcpListener implements RpcListener {
 		}
 	}
 
-	private static <V, A> CompletionHandler<V, A> handlerFrom(BiConsumer<V, A> completed, AsynchronousSocketChannel connection) {
+	private <V, A> CompletionHandler<V, A> handlerFrom(BiConsumer<V, A> completed, AsynchronousSocketChannel connection) {
 	    return AsyncUtility.handlerFrom(completed, (Throwable error, A attachment) -> {
 	                    LogManager.getLogger(RpcTcpListener.class).info("socket server failure", error);
-	                    if(connection != null && connection.isOpen()){
+	                    if(connection != null){
 	                    	closeSocket(connection);
 	                    }
 	                });
 	}
 	
-	private static void closeSocket(AsynchronousSocketChannel connection){
+	private void closeSocket(AsynchronousSocketChannel connection){
 		try{
+			this.connections.remove(connection);
     		connection.close();
     	}catch(IOException ex){
     		LogManager.getLogger(RpcTcpListener.class).info("failed to close client socket", ex);

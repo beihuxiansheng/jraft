@@ -129,6 +129,6 @@ public class BinaryUtilTests {
 		byte[] value = new byte[this.random.nextInt(20) + 1];
 		long term = this.random.nextLong();
 		this.random.nextBytes(value);
-		return new LogEntry(term, value, LogValueType.fromByte(this.random.nextBoolean() ? (byte)1 : (byte)2));
+		return new LogEntry(term, value, LogValueType.fromByte((byte)(this.random.nextInt(4) + 1)));
 	}
 }
