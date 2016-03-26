@@ -56,6 +56,61 @@ public enum RaftMessageType {
 		public byte toByte() {
 			return (byte) 5;
 		}
+	},
+	AddServerRequest {
+		@Override
+		public String toString() {
+			return "AddServerRequest";
+		}
+
+		@Override
+		public byte toByte() {
+			return (byte) 6;
+		}
+	},
+	AddServerResponse {
+		@Override
+		public String toString() {
+			return "AddServerResponse";
+		}
+
+		@Override
+		public byte toByte() {
+			return (byte) 7;
+		}
+	},
+	RemoveServerRequest {
+		@Override
+		public String toString(){
+			return "RemoveServerRequest";
+		}
+		
+		@Override
+		public byte toByte(){
+			return (byte)8;
+		}
+	},
+	RemoveServerResponse {
+		@Override
+		public String toString(){
+			return "RemoveServerResponse";
+		}
+		
+		@Override
+		public byte toByte(){
+			return (byte)9;
+		}
+	},
+	SyncLogRequest {
+		@Override
+		public String toString(){
+			return "SyncLogRequest";
+		}
+		
+		@Override
+		public byte toByte(){
+			return (byte)10;
+		}
 	};
 
 	public abstract byte toByte();
@@ -72,8 +127,18 @@ public enum RaftMessageType {
 			return AppendEntriesResponse;
 		case 5:
 			return ClientRequest;
+		case 6:
+			return AddServerRequest;
+		case 7:
+			return AddServerResponse;
+		case 8:
+			return RemoveServerRequest;
+		case 9:
+			return RemoveServerResponse;
+		case 10:
+			return SyncLogRequest;
 		}
 
-		return null;
+		throw new IllegalArgumentException("the value for the message type is not defined");
 	}
 }

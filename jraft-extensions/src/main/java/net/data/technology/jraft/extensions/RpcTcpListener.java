@@ -24,6 +24,7 @@ public class RpcTcpListener implements RpcListener {
 	private int port;
 	private Logger logger;
 	private AsynchronousServerSocketChannel listener;
+	private ExecutorService executorService;
 	
 	public RpcTcpListener(int port){
 		this.port = port;
@@ -33,7 +34,7 @@ public class RpcTcpListener implements RpcListener {
 	@Override
 	public void startListening(RaftMessageHandler messageHandler) {
 		int processors = Runtime.getRuntime().availableProcessors();
-		ExecutorService executorService = Executors.newFixedThreadPool(processors);
+		executorService = Executors.newFixedThreadPool(processors);
 		try{
 			AsynchronousChannelGroup channelGroup = AsynchronousChannelGroup.withThreadPool(executorService);
 			this.listener = AsynchronousServerSocketChannel.open(channelGroup);
@@ -42,6 +43,24 @@ public class RpcTcpListener implements RpcListener {
 			this.acceptRequests(messageHandler);
 		}catch(IOException exception){
 			logger.error("failed to start the listener due to io error", exception);
+		}
+	}
+	
+	@Override
+	public void stop(){
+		if(this.listener != null){
+			try {
+				this.listener.close();
+			} catch (IOException e) {
+				logger.error("failed to close the listener socket", e);
+			}
+			
+			this.listener = null;
+		}
+		
+		if(this.executorService != null){
+			this.executorService.shutdown();
+			this.executorService = null;
 		}
 	}
 	

@@ -331,6 +331,7 @@ public class RaftServer implements RaftMessageHandler {
 				}
 				
 				peer.setNextLogIndex(response.getNextIndex());
+				peer.setMatchedIndex(response.getNextIndex() - 1);
 			}
 		}else{
 			synchronized(peer){
@@ -466,7 +467,6 @@ public class RaftServer implements RaftMessageHandler {
 	}
 	
 	private void commit(long targetIndex){
-		this.logger.debug("trying to commit index %d", targetIndex);
 		if(targetIndex > this.commitIndex){
 			while(this.commitIndex < targetIndex && this.commitIndex < this.logStore.getFirstAvailableIndex() - 1){
 				long indexToCommit = this.commitIndex + 1;
@@ -529,18 +529,18 @@ public class RaftServer implements RaftMessageHandler {
 	}
 	
 	private void tryToCommit(){
-		ArrayList<Long> nextIndexes = new ArrayList<Long>(this.peers.size() + 1);
-		nextIndexes.add(this.logStore.getFirstAvailableIndex());
+		ArrayList<Long> matchedIndexes = new ArrayList<Long>(this.peers.size() + 1);
+		matchedIndexes.add(this.logStore.getFirstAvailableIndex() - 1);
 		for(PeerServer peer : this.peers.values()){
-			nextIndexes.add(peer.getNextLogIndex());
+			matchedIndexes.add(peer.getMatchedIndex());
 		}
 		
-		nextIndexes.sort(new Comparator<Long>(){
+		matchedIndexes.sort(new Comparator<Long>(){
 
 			@Override
 			public int compare(Long arg0, Long arg1) {
 				return (int)(arg0.longValue() - arg1.longValue());
 			}});
-		this.commit(nextIndexes.get((this.peers.size() + 1) / 2) - 1);
+		this.commit(matchedIndexes.get((this.peers.size() + 1) / 2));
 	}
 }

@@ -18,6 +18,7 @@ public class PeerServer {
 	private Callable<Void> heartbeatTimeoutHandler;
 	private ScheduledFuture<?> heartbeatTask;
 	private long nextLogIndex;
+	private long matchedIndex;
 	private boolean heartbeatEnabled;
 	
 	public PeerServer(ClusterServer server, RaftContext context, final Consumer<PeerServer> heartbeatConsumer){
@@ -29,6 +30,7 @@ public class PeerServer {
 		this.rpcBackoffInterval = context.getRaftParameters().getRpcFailureBackoff();
 		this.heartbeatTask = null;
 		this.nextLogIndex = 1;
+		this.matchedIndex = 0;
 		this.heartbeatEnabled = false;
 		PeerServer self = this;
 		this.heartbeatTimeoutHandler = new Callable<Void>(){
@@ -82,6 +84,14 @@ public class PeerServer {
 
 	public void setNextLogIndex(long nextLogIndex) {
 		this.nextLogIndex = nextLogIndex;
+	}
+	
+	public long getMatchedIndex(){
+		return this.matchedIndex;
+	}
+	
+	public void setMatchedIndex(long matchedIndex){
+		this.matchedIndex = matchedIndex;
 	}
 
 	public CompletableFuture<RaftResponseMessage> SendRequest(RaftRequestMessage request){

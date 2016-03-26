@@ -60,6 +60,14 @@ public class RaftClient {
 					return;
 				}
 				
+				// try a random server as leader
+				for(ClusterServer server : this.configuration.getServers()){
+					if(server.getId() != this.leaderId){
+						this.leaderId = server.getId();
+						break;
+					}
+				}
+				
 				refreshRpcClient();
 				
 				if(rpcBackoff > 0){
