@@ -117,7 +117,7 @@ public class FileBasedServerStateManager implements ServerStateManager {
 			}
 			
 			byte[] stateData = new byte[Long.BYTES * 2 + Integer.BYTES];
-			this.serverStateFile.read(stateData);
+			this.read(stateData);
 			this.serverStateFile.seek(0);
 			ByteBuffer buffer = ByteBuffer.wrap(stateData);
 			ServerState state = new ServerState();
@@ -142,6 +142,24 @@ public class FileBasedServerStateManager implements ServerStateManager {
 			this.logStore.close();
 		}catch(IOException exception){
 			this.logger.info("failed to shutdown the server state manager due to io error", exception);
+		}
+	}
+	
+	private void read(byte[] buffer){
+		try{
+			int offset = 0;
+			int bytesRead = 0;
+			while(offset < buffer.length && (bytesRead = this.serverStateFile.read(buffer, offset, buffer.length - offset)) != -1){
+				offset += bytesRead;
+			}
+			
+			if(offset < buffer.length){
+				this.logger.error(String.format("only %d bytes are read while %d bytes are desired, bad file", offset, buffer.length));
+				throw new RuntimeException("bad file, insufficient file data for reading");
+			}
+		}catch(IOException exception){
+			this.logger.error("failed to read and fill the buffer", exception);
+			throw new RuntimeException(exception.getMessage(), exception);
 		}
 	}
 }

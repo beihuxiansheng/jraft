@@ -8,7 +8,7 @@ import java.util.function.Consumer;
 
 public class PeerServer {
 
-	private int id;
+	private ClusterServer clusterConfig;
 	private RpcClient rpcClient;
 	private int currentHeartbeatInterval;
 	private int heartbeatInterval;
@@ -22,7 +22,7 @@ public class PeerServer {
 	private boolean heartbeatEnabled;
 	
 	public PeerServer(ClusterServer server, RaftContext context, final Consumer<PeerServer> heartbeatConsumer){
-		this.id = server.getId();
+		this.clusterConfig = server;
 		this.rpcClient = context.getRpcClientFactory().createRpcClient(server.getEndpoint());
 		this.ongoingAppendRequests = new AtomicInteger(0);
 		this.heartbeatInterval = this.currentHeartbeatInterval = context.getRaftParameters().getHeartbeatInterval();
@@ -43,7 +43,11 @@ public class PeerServer {
 	}
 	
 	public int getId(){
-		return this.id;
+		return this.clusterConfig.getId();
+	}
+	
+	public ClusterServer getClusterConfig(){
+		return this.clusterConfig;
 	}
 	
 	public Callable<Void> getHeartbeartHandler(){
@@ -120,7 +124,7 @@ public class PeerServer {
 				});
 	}
 	
-	private synchronized void slowDownHeartbeating(){
+	public synchronized void slowDownHeartbeating(){
 		this.currentHeartbeatInterval = Math.min(this.maxHeartbeatInterval, this.currentHeartbeatInterval + this.rpcBackoffInterval);
 	}
 	

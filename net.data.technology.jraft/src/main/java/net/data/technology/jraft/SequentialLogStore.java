@@ -3,7 +3,7 @@ package net.data.technology.jraft;
 public interface SequentialLogStore {
 
 	/**
-	 * The first available index of the store, starts with one
+	 * The first available index of the store, starts with 1
 	 * @return value >= 1
 	 */
 	public long getFirstAvailableIndex();
@@ -22,7 +22,7 @@ public interface SequentialLogStore {
 	
 	/**
 	 * Over writes a log entry at index of {@code index}
-	 * @param index a value < {@code this.getFirstAvailableIndex()}
+	 * @param index a value < {@code this.getFirstAvailableIndex()}, and starts from 1
 	 * @param logEntry
 	 */
 	public void writeAt(long index, LogEntry logEntry);
@@ -37,8 +37,23 @@ public interface SequentialLogStore {
 	
 	/**
 	 * Gets the log entry at the specified index
-	 * @param index
+	 * @param index, starts from 1
 	 * @return the log entry or null if index >= {@code this.getFirstAvailableIndex()}
 	 */
 	public LogEntry getLogEntryAt(long index);
+	
+	/**
+	 * Pack {@code itemsToPack} log items starts from {@code index} 
+	 * @param index
+	 * @param itemsToPack
+	 * @return log pack
+	 */
+	public byte[] packLog(long index, int itemsToPack);
+	
+	/**
+	 * Apply the log pack to current log store, starting from index
+	 * @param index, the log index that start applying the logPack, index starts from 1
+	 * @param logPack
+	 */
+	public void applyLogPack(long index, byte[] logPack);
 }

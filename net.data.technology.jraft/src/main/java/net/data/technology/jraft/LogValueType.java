@@ -20,7 +20,7 @@ public enum LogValueType {
 			return 3;
 		}
 	},
-	ZippedLogInfo {
+	LogPack {
 		@Override
 		public byte toByte(){
 			return 4;
@@ -38,7 +38,7 @@ public enum LogValueType {
 		case 3:
 			return ClusterServer;
 		case 4:
-			return ZippedLogInfo;
+			return LogPack;
 		default:
 			throw new IllegalArgumentException(String.format("%d is not defined for LogValueType", b));
 		}

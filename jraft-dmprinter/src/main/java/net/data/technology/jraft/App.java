@@ -6,6 +6,8 @@ import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.StringTokenizer;
 
 import net.data.technology.jraft.extensions.FileBasedServerStateManager;
 import net.data.technology.jraft.extensions.Log4jLoggerFactory;
@@ -41,7 +43,7 @@ public class App
     	}
 
     	URI localEndpoint = new URI(config.getServer(stateManager.getServerId()).getEndpoint());
-    	RaftParameters raftParameters = new RaftParameters(5000, 3000, 1500, 500);
+    	RaftParameters raftParameters = new RaftParameters(5000, 3000, 1500, 500, 5, 5);
     	RaftContext context = new RaftContext(
     			stateManager,
     			new MessagePrinter(),
@@ -60,6 +62,23 @@ public class App
     	while(true){
     		System.out.print("Message:");
     		String message = reader.readLine();
+    		if(message.startsWith("srv")){
+    			StringTokenizer tokenizer = new StringTokenizer(message, ";");
+    			ArrayList<String> values = new ArrayList<String>();
+    			while(tokenizer.hasMoreTokens()){
+    				values.add(tokenizer.nextToken());
+    			}
+    			
+    			if(values.size() == 3){
+    				ClusterServer server = new ClusterServer();
+    				server.setEndpoint(values.get(2));
+    				server.setId(Integer.parseInt(values.get(1)));
+    				boolean accepted = client.addServer(server).get();
+    	    		System.out.println("Accepted: " + String.valueOf(accepted));
+    				continue;
+    			}
+    		}
+    		
     		boolean accepted = client.appendEntries(new byte[][]{ message.getBytes() }).get();
     		System.out.println("Accepted: " + String.valueOf(accepted));
     	}

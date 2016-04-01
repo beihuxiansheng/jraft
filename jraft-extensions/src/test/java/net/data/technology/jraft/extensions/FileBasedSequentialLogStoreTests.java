@@ -20,9 +20,50 @@ public class FileBasedSequentialLogStoreTests {
 	private Random random = new Random(Calendar.getInstance().getTimeInMillis());
 	
 	@Test
-	public void testStore() throws IOException{
+	public void testPackAndUnpack() throws IOException {
 		Path container = Files.createTempDirectory("logstore");
-		Files.deleteIfExists(container.resolve("store.idex"));
+		Files.deleteIfExists(container.resolve("store.idx"));
+		Files.deleteIfExists(container.resolve("store.data"));
+		Path container1 = Files.createTempDirectory("logstore");
+		Files.deleteIfExists(container1.resolve("store.idx"));
+		Files.deleteIfExists(container1.resolve("store.data"));
+		FileBasedSequentialLogStore store = new FileBasedSequentialLogStore(container.toString());
+		FileBasedSequentialLogStore store1 = new FileBasedSequentialLogStore(container1.toString());
+		int logsCount = this.random.nextInt(1000) + 1000;
+		for(int i = 0; i < logsCount; ++i){
+			store.append(this.randomLogEntry());
+			store1.append(this.randomLogEntry());
+		}
+		
+		int logsCopied = 0;
+		while(logsCopied < logsCount){
+			byte[] pack = store.packLog(logsCopied + 1, 100);
+			store1.applyLogPack(logsCopied + 1, pack);
+			logsCopied = Math.min(logsCopied + 100,  logsCount);
+		}
+		
+		assertEquals(store.getFirstAvailableIndex(), store1.getFirstAvailableIndex());
+		for(int i = 1; i <= logsCount; ++i){
+			LogEntry entry1 = store.getLogEntryAt(i);
+			LogEntry entry2 = store1.getLogEntryAt(i);
+			assertTrue("the " + String.valueOf(i) + "th value are not equal(total: " + String.valueOf(logsCount) + ")", logEntriesEquals(entry1, entry2));
+		}
+		
+		store.close();
+		store1.close();
+
+		Files.deleteIfExists(container.resolve("store.idx"));
+		Files.deleteIfExists(container.resolve("store.data"));
+		Files.deleteIfExists(container);
+		Files.deleteIfExists(container1.resolve("store.idx"));
+		Files.deleteIfExists(container1.resolve("store.data"));
+		Files.deleteIfExists(container1);
+	}
+	
+	@Test
+	public void testStore() throws IOException {
+		Path container = Files.createTempDirectory("logstore");
+		Files.deleteIfExists(container.resolve("store.idx"));
 		Files.deleteIfExists(container.resolve("store.data"));
 		FileBasedSequentialLogStore store = new FileBasedSequentialLogStore(container.toString());
 		assertTrue(store.getLastLogEntry().getTerm() == 0);

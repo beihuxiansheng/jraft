@@ -42,6 +42,22 @@ public class RaftClient {
 		return result;
 	}
 	
+	public CompletableFuture<Boolean> addServer(ClusterServer server){
+		if(server == null){
+			throw new IllegalArgumentException("server cannot be null");
+		}
+		
+		LogEntry[] logEntries = new LogEntry[1];
+		logEntries[0] = new LogEntry(0, server.toBytes(), LogValueType.ClusterServer);
+		RaftRequestMessage request = new RaftRequestMessage();
+		request.setMessageType(RaftMessageType.AddServerRequest);
+		request.setLogEntries(logEntries);
+		
+		CompletableFuture<Boolean> result = new CompletableFuture<Boolean>();
+		this.tryCurrentLeader(request, result, 0, 0);
+		return result;
+	}
+	
 	private void tryCurrentLeader(RaftRequestMessage request, CompletableFuture<Boolean> future, int rpcBackoff, int retry){
 		getOrCreateRpcClient().send(request).whenCompleteAsync((RaftResponseMessage response, Throwable error) -> {
 			if(error == null){

@@ -18,7 +18,7 @@ public class RaftContext {
 		this.loggerFactory = logFactory;
 		
 		if(this.raftParameters == null){
-			this.raftParameters = new RaftParameters(300, 150, 75, 25);
+			this.raftParameters = new RaftParameters(300, 150, 75, 25, 1000, 100);
 		}
 	}
 

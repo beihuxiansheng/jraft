@@ -1,7 +1,6 @@
 package net.data.technology.jraft;
 
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
@@ -24,14 +23,7 @@ public class ClusterConfiguration {
 		configuration.setLogIndex(buffer.getLong());
 		configuration.setLastLogIndex(buffer.getLong());
 		while(buffer.hasRemaining()){
-			int serverId = buffer.getInt();
-			int size = buffer.getInt();
-			byte[] endpointData = new byte[size];
-			buffer.get(endpointData);
-			ClusterServer server = new ClusterServer();
-			server.setId(serverId);
-			server.setEndpoint(new String(endpointData, StandardCharsets.UTF_8));
-			configuration.getServers().add(server);
+			configuration.getServers().add(new ClusterServer(buffer));
 		}
 		
 		return configuration;
@@ -72,13 +64,9 @@ public class ClusterConfiguration {
 		List<byte[]> serversData = new ArrayList<byte[]>(this.servers.size());
 		for(int i = 0; i < this.servers.size(); ++i){
 			ClusterServer server = this.servers.get(i);
-			byte[] endpointData = server.getEndpoint().getBytes(StandardCharsets.UTF_8);
-			ByteBuffer buffer = ByteBuffer.allocate(endpointData.length + 2 * Integer.BYTES);
-			buffer.putInt(server.getId());
-			buffer.putInt(endpointData.length);
-			buffer.put(endpointData);
-			serversData.add(buffer.array());
-			totalSize += 2 * Integer.BYTES + endpointData.length;
+			byte[] dataForServer = server.toBytes();
+			totalSize += dataForServer.length;
+			serversData.add(dataForServer);
 		}
 		
 		ByteBuffer buffer = ByteBuffer.allocate(totalSize);
