@@ -77,6 +77,17 @@ public class App
     	    		System.out.println("Accepted: " + String.valueOf(accepted));
     				continue;
     			}
+    		}else if(message.startsWith("fmt:")){
+    			String format = message.substring(4);
+    			System.out.print("How many?");
+    			String countValue = reader.readLine();
+    			int count = Integer.parseInt(countValue.trim());
+    			for(int i = 1; i <= count; ++i){
+    				String msg = String.format(format, i);
+    				boolean accepted = client.appendEntries(new byte[][]{ msg.getBytes() }).get();
+    	    		System.out.println("Accepted: " + String.valueOf(accepted));
+    			}
+    			continue;
     		}
     		
     		boolean accepted = client.appendEntries(new byte[][]{ message.getBytes() }).get();

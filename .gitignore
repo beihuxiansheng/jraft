@@ -1,5 +1,6 @@
 **/*.class
 **/*.classpath
 **/*.project
+**/*.jar
 jraft-extensions/target/
 net.data.technology.jraft/target/

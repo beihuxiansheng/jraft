@@ -43,7 +43,8 @@ public class FileBasedServerStateManager implements ServerStateManager {
 			Properties props = new Properties();
 			FileInputStream configInput = new FileInputStream(this.container.resolve(CONFIG_FILE).toString());
 			props.load(configInput);
-			this.serverId = Integer.parseInt(props.getProperty("server.id"));
+			String serverIdValue = props.getProperty("server.id");
+			this.serverId = serverIdValue == null || serverIdValue.length() == 0 ? -1 : Integer.parseInt(serverIdValue.trim());
 			configInput.close();
 			this.serverStateFile = new RandomAccessFile(this.container.resolve(STATE_FILE).toString(), "rw");
 			this.serverStateFile.seek(0);
