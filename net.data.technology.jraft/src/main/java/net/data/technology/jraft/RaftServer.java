@@ -674,6 +674,8 @@ public class RaftServer implements RaftMessageHandler {
 			if(this.serverToJoin != null){
 				// we are reusing heartbeat interval value to indicate when to stop retry
 				this.serverToJoin.resumeHeartbeatingSpeed();
+				this.serverToJoin.setNextLogIndex(response.getNextIndex());
+				this.serverToJoin.setMatchedIndex(response.getNextIndex() - 1);
 				this.syncLogsToNewComingServer(response.getNextIndex()); // sync from the very first log entry
 			}
 		}else if(response.getMessageType() == RaftMessageType.JoinClusterResponse){
