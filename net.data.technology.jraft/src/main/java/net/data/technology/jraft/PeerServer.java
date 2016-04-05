@@ -14,7 +14,8 @@ public class PeerServer {
 	private int heartbeatInterval;
 	private int rpcBackoffInterval;
 	private int maxHeartbeatInterval;
-	private AtomicInteger ongoingAppendRequests;
+	private AtomicInteger busyFlag;
+	private AtomicInteger pendingCommitFlag;
 	private Callable<Void> heartbeatTimeoutHandler;
 	private ScheduledFuture<?> heartbeatTask;
 	private long nextLogIndex;
@@ -24,7 +25,8 @@ public class PeerServer {
 	public PeerServer(ClusterServer server, RaftContext context, final Consumer<PeerServer> heartbeatConsumer){
 		this.clusterConfig = server;
 		this.rpcClient = context.getRpcClientFactory().createRpcClient(server.getEndpoint());
-		this.ongoingAppendRequests = new AtomicInteger(0);
+		this.busyFlag = new AtomicInteger(0);
+		this.pendingCommitFlag = new AtomicInteger(0);
 		this.heartbeatInterval = this.currentHeartbeatInterval = context.getRaftParameters().getHeartbeatInterval();
 		this.maxHeartbeatInterval = context.getRaftParameters().getMaxHeartbeatInterval();
 		this.rpcBackoffInterval = context.getRaftParameters().getRpcFailureBackoff();
@@ -66,8 +68,12 @@ public class PeerServer {
 		return this.heartbeatTask;
 	}
 	
-	public boolean isBusy(){
-		return this.ongoingAppendRequests.get() > 0;
+	public boolean makeBusy(){
+		return this.busyFlag.compareAndSet(0, 1);
+	}
+	
+	public void setFree(){
+		this.busyFlag.set(0);
 	}
 	
 	public boolean isHeartbeatEnabled(){
@@ -97,25 +103,25 @@ public class PeerServer {
 	public void setMatchedIndex(long matchedIndex){
 		this.matchedIndex = matchedIndex;
 	}
+	
+	public void setPendingCommit(){
+		this.pendingCommitFlag.set(1);
+	}
+	
+	public boolean clearPendingCommit(){
+		return this.pendingCommitFlag.compareAndSet(1, 0);
+	}
 
 	public CompletableFuture<RaftResponseMessage> SendRequest(RaftRequestMessage request){
-		final boolean isAppendRequest = request.getMessageType() == RaftMessageType.AppendEntriesRequest;
-		if(isAppendRequest){
-			this.ongoingAppendRequests.incrementAndGet();
-		}
-		
+		boolean isAppendRequest = request.getMessageType() == RaftMessageType.AppendEntriesRequest;
 		return this.rpcClient.send(request)
 				.thenComposeAsync((RaftResponseMessage response) -> {
-					if(isAppendRequest){
-						this.ongoingAppendRequests.decrementAndGet();
-					}
-					
 					this.resumeHeartbeatingSpeed();
 					return CompletableFuture.completedFuture(response);
 				})
 				.exceptionally((Throwable error) -> {
 					if(isAppendRequest){
-						this.ongoingAppendRequests.decrementAndGet();
+						this.setFree();
 					}
 					
 					this.slowDownHeartbeating();

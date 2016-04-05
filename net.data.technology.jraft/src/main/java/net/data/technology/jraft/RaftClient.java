@@ -59,6 +59,7 @@ public class RaftClient {
 	}
 	
 	private void tryCurrentLeader(RaftRequestMessage request, CompletableFuture<Boolean> future, int rpcBackoff, int retry){
+		logger.debug("trying request to %d as current leader", this.leaderId);
 		getOrCreateRpcClient().send(request).whenCompleteAsync((RaftResponseMessage response, Throwable error) -> {
 			if(error == null){
 				logger.debug("response from remote server, leader: %d, accepted: %s", response.getDestination(), String.valueOf(response.isAccepted()));
@@ -128,6 +129,7 @@ public class RaftClient {
 			}
 		}
 		
-		return null;
+		logger.info("no endpoint could be found for leader %d, that usually means no leader is elected, retry the first one", this.leaderId);
+		return this.configuration.getServers().get(0).getEndpoint();
 	}
 }

@@ -17,6 +17,12 @@ import java.util.concurrent.TimeUnit;
 
 public class RaftServer implements RaftMessageHandler {
 
+	private static final Comparator<Long> indexComparator = new Comparator<Long>(){
+
+		@Override
+		public int compare(Long arg0, Long arg1) {
+			return (int)(arg0.longValue() - arg1.longValue());
+		}};
 	private RaftContext context;
 	private ScheduledThreadPoolExecutor scheduler;
 	private ScheduledFuture<?> scheduledElection;
@@ -300,7 +306,7 @@ public class RaftServer implements RaftMessageHandler {
 	}
 	
 	private void requestAppendEntries(PeerServer peer){
-		if(!peer.isBusy()){
+		if(peer.makeBusy()){
 			peer.SendRequest(this.createAppendEntriesRequest(peer))
 				.whenCompleteAsync((RaftResponseMessage response, Throwable error) -> {
 					handlePeerResponse(response, error);
@@ -349,21 +355,31 @@ public class RaftServer implements RaftMessageHandler {
 			return;
 		}
 		
+		// If there are pending logs to be synced or commit index need to be advanced, continue to send appendEntries to this peer
 		boolean needToCatchup = true;
 		if(response.isAccepted()){
 			synchronized(peer){
 				peer.setNextLogIndex(response.getNextIndex());
 				peer.setMatchedIndex(response.getNextIndex() - 1);
-				needToCatchup = this.logStore.getFirstAvailableIndex() > peer.getNextLogIndex();
 			}
 			
 			// try to commit with this response
-			this.tryToCommit();
+			ArrayList<Long> matchedIndexes = new ArrayList<Long>(this.peers.size() + 1);
+			matchedIndexes.add(this.logStore.getFirstAvailableIndex() - 1);
+			for(PeerServer p : this.peers.values()){
+				matchedIndexes.add(p.getMatchedIndex());
+			}
+			
+			matchedIndexes.sort(indexComparator);
+			this.commit(matchedIndexes.get((this.peers.size() + 1) / 2));
+			needToCatchup = peer.clearPendingCommit() || response.getNextIndex() < this.logStore.getFirstAvailableIndex();
 		}else{
 			synchronized(peer){
 				peer.setNextLogIndex(peer.getNextLogIndex() - 1);
 			}
 		}
+		
+		peer.setFree();
 		
 		// This may not be a leader anymore, such as the response was sent out long time ago
         // and the role was updated by UpdateTerm call
@@ -493,22 +509,26 @@ public class RaftServer implements RaftMessageHandler {
 		if(targetIndex > this.state.getCommitIndex()){
 			while(this.state.getCommitIndex() < targetIndex && this.state.getCommitIndex() < this.logStore.getFirstAvailableIndex() - 1){
 				long indexToCommit = this.state.getCommitIndex() + 1;
-				LogEntry logEntry = this.logStore.getLogEntryAt(indexToCommit);
-				if(logEntry.getValueType() == LogValueType.Application){
-					this.stateMachine.commit(indexToCommit, this.logStore.getLogEntryAt(indexToCommit).getValue());
-				}else if(logEntry.getValueType() == LogValueType.Configuration){
-					this.context.getServerStateManager().saveClusterConfiguration(this.config);
+				try{
+					LogEntry logEntry = this.logStore.getLogEntryAt(indexToCommit);
+					if(logEntry.getValueType() == LogValueType.Application){
+						this.stateMachine.commit(indexToCommit, this.logStore.getLogEntryAt(indexToCommit).getValue());
+					}else if(logEntry.getValueType() == LogValueType.Configuration){
+						this.context.getServerStateManager().saveClusterConfiguration(this.config);
+					}
+					
+					this.state.setCommitIndex(indexToCommit);
+				}catch(Throwable error){
+					this.logger.error("failed to commit at index %d, due to errors %s", indexToCommit, error.toString());
 				}
-				
-				this.state.setCommitIndex(indexToCommit);
 			}
 			
 			// save the commitment state
 			this.context.getServerStateManager().persistState(this.state);
 			
-			// Ask peers to commit the value
-			if(this.role == ServerRole.Leader){
-				this.requestAppendEntries();
+			// set pending commit for peers, so that commits are replicated to peers timely
+			for(PeerServer peer : this.peers.values()){
+				peer.setPendingCommit();
 			}
 		}
 	}
@@ -558,22 +578,6 @@ public class RaftServer implements RaftMessageHandler {
 		requestMessage.setCommitIndex(commitIndex);
 		requestMessage.setTerm(term);
 		return requestMessage;
-	}
-	
-	private void tryToCommit(){
-		ArrayList<Long> matchedIndexes = new ArrayList<Long>(this.peers.size() + 1);
-		matchedIndexes.add(this.logStore.getFirstAvailableIndex() - 1);
-		for(PeerServer peer : this.peers.values()){
-			matchedIndexes.add(peer.getMatchedIndex());
-		}
-		
-		matchedIndexes.sort(new Comparator<Long>(){
-
-			@Override
-			public int compare(Long arg0, Long arg1) {
-				return (int)(arg0.longValue() - arg1.longValue());
-			}});
-		this.commit(matchedIndexes.get((this.peers.size() + 1) / 2));
 	}
 	
 	private void reconfigure(ClusterConfiguration newConfig){
@@ -857,6 +861,7 @@ public class RaftServer implements RaftMessageHandler {
 			this.logStore.append(configEntry);
 			this.config = newConfig;
 			this.peers.put(this.serverToJoin.getId(), this.serverToJoin);
+			this.requestAppendEntries(this.serverToJoin);
 			this.enableHeartbeatForPeer(this.serverToJoin);
 			this.serverToJoin = null;
 			return;

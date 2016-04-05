@@ -6,6 +6,8 @@ import java.nio.ByteBuffer;
 import java.nio.channels.AsynchronousSocketChannel;
 import java.nio.channels.CompletionHandler;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 
 import org.apache.log4j.LogManager;
@@ -18,12 +20,16 @@ import net.data.technology.jraft.RpcClient;
 public class RpcTcpClient implements RpcClient {
 
 	private AsynchronousSocketChannel connection;
+	private ConcurrentLinkedQueue<ReadTask> readTasks;
+	private AtomicInteger readers;
 	private InetSocketAddress remote;
 	private Logger logger;
 	
 	public RpcTcpClient(InetSocketAddress remote){
 		this.remote = remote;
 		this.logger = LogManager.getLogger(getClass());
+		this.readTasks = new ConcurrentLinkedQueue<ReadTask>();
+		this.readers = new AtomicInteger(0);
 	}
 	
 	@Override
@@ -58,20 +64,28 @@ public class RpcTcpClient implements RpcClient {
 				}else{
 					// read the response
 					ByteBuffer responseBuffer = ByteBuffer.allocate(BinaryUtils.RAFT_RESPONSE_HEADER_SIZE);
-					try{
-						this.connection.read(responseBuffer, null, handlerFrom((Integer bytesRead, Object state) -> {
-							if(bytesRead.intValue() < BinaryUtils.RAFT_RESPONSE_HEADER_SIZE){
-								logger.info("failed to read response from remote server.");
-								future.completeExceptionally(new IOException("Only part of the response data could be read"));
-								closeSocket();
-							}else{
-								future.complete(BinaryUtils.bytesToResponseMessage(responseBuffer.array()));
+					CompletionHandler<Integer, Object> handler = handlerFrom((Integer bytesRead, Object state) -> {
+						if(bytesRead.intValue() < BinaryUtils.RAFT_RESPONSE_HEADER_SIZE){
+							logger.info("failed to read response from remote server.");
+							future.completeExceptionally(new IOException("Only part of the response data could be read"));
+							closeSocket();
+						}else{
+							future.complete(BinaryUtils.bytesToResponseMessage(responseBuffer.array()));
+						}
+						
+						int waitingReaders = this.readers.decrementAndGet();
+						if(waitingReaders > 0){
+							ReadTask task = this.readTasks.poll();
+							if(task != null){
+								this.readResponse(task.buffer, task.completionHandler, task.future);
 							}
-						}, future));
-					}catch(Exception readError){
-						logger.info("failed to read from socket", readError);
-						future.completeExceptionally(readError);
-						closeSocket();
+						}
+					}, future);
+					int readerCount = this.readers.getAndIncrement();
+					if(readerCount > 0){
+						this.readTasks.add(new ReadTask(responseBuffer, handler, future));
+					}else{
+						this.readResponse(responseBuffer, handler, future);
 					}
 				}
 			}, future));
@@ -82,8 +96,19 @@ public class RpcTcpClient implements RpcClient {
 		}
 	}
 	
+	private void readResponse(ByteBuffer responseBuffer, CompletionHandler<Integer, Object> handler, CompletableFuture<RaftResponseMessage> future){
+		try{
+			this.connection.read(responseBuffer, null, handler);
+		}catch(Exception readError){
+			logger.info("failed to read from socket", readError);
+			future.completeExceptionally(readError);
+			closeSocket();
+		}
+	}
+	
 	private <V, A> CompletionHandler<V, A> handlerFrom(BiConsumer<V, A> completed, CompletableFuture<RaftResponseMessage> future) {
 	    return AsyncUtility.handlerFrom(completed, (Throwable error, A attachment) -> {
+	    				this.logger.info("socket error", error);
 	                    future.completeExceptionally(error);
 	                    closeSocket();
 	                });
@@ -99,5 +124,27 @@ public class RpcTcpClient implements RpcClient {
     	}catch(IOException ex){
     		this.logger.info("failed to close socket", ex);
     	}
+		
+		while(true){
+			ReadTask task = this.readTasks.poll();
+			if(task == null){
+				break;
+			}
+			
+			task.future.completeExceptionally(new IOException("socket is closed, no more reads can be completed"));
+			this.readers.set(0);
+		}
+	}
+	
+	static class ReadTask{
+		private ByteBuffer buffer;
+		private CompletionHandler<Integer, Object> completionHandler;
+		private CompletableFuture<RaftResponseMessage> future;
+		
+		ReadTask(ByteBuffer buffer, CompletionHandler<Integer, Object> completionHandler, CompletableFuture<RaftResponseMessage> future){
+			this.buffer = buffer;
+			this.completionHandler = completionHandler;
+			this.future = future;
+		}
 	}
 }

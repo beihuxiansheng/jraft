@@ -161,7 +161,7 @@ public class RpcTcpListener implements RpcListener {
 
 	private <V, A> CompletionHandler<V, A> handlerFrom(BiConsumer<V, A> completed, AsynchronousSocketChannel connection) {
 	    return AsyncUtility.handlerFrom(completed, (Throwable error, A attachment) -> {
-	                    LogManager.getLogger(RpcTcpListener.class).info("socket server failure", error);
+	    				this.logger.info("socket server failure", error);
 	                    if(connection != null){
 	                    	closeSocket(connection);
 	                    }
@@ -173,7 +173,7 @@ public class RpcTcpListener implements RpcListener {
 			this.connections.remove(connection);
     		connection.close();
     	}catch(IOException ex){
-    		LogManager.getLogger(RpcTcpListener.class).info("failed to close client socket", ex);
+    		this.logger.info("failed to close client socket", ex);
     	}
 	}
 }
