@@ -104,22 +104,21 @@ public class PeerServer {
 			this.ongoingAppendRequests.incrementAndGet();
 		}
 		
-		PeerServer self = this;
 		return this.rpcClient.send(request)
 				.thenComposeAsync((RaftResponseMessage response) -> {
 					if(isAppendRequest){
-						self.ongoingAppendRequests.decrementAndGet();
+						this.ongoingAppendRequests.decrementAndGet();
 					}
 					
-					self.resumeHeartbeatingSpeed();
+					this.resumeHeartbeatingSpeed();
 					return CompletableFuture.completedFuture(response);
 				})
 				.exceptionally((Throwable error) -> {
 					if(isAppendRequest){
-						self.ongoingAppendRequests.decrementAndGet();
+						this.ongoingAppendRequests.decrementAndGet();
 					}
 					
-					self.slowDownHeartbeating();
+					this.slowDownHeartbeating();
 					throw new RpcException(error, request);
 				});
 	}

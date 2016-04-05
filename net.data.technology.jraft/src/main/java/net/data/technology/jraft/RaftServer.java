@@ -234,7 +234,7 @@ public class RaftServer implements RaftMessageHandler {
 		}
 		
 		// Urgent commit, so that the commit will not depend on heartbeat
-		this.requestAppendEntries(true);
+		this.requestAppendEntries();
 		response.setAccepted(true);
 		response.setNextIndex(this.logStore.getFirstAvailableIndex());
 		return response;
@@ -293,14 +293,18 @@ public class RaftServer implements RaftMessageHandler {
 		}
 	}
 	
-	private void requestAppendEntries(boolean urgentRequest){
+	private void requestAppendEntries(){
 		for(PeerServer peer : this.peers.values()){
-			if(urgentRequest || !peer.isBusy()){
-				peer.SendRequest(this.createAppendEntriesRequest(peer))
-					.whenCompleteAsync((RaftResponseMessage response, Throwable error) -> {
-						handlePeerResponse(response, error);
-					});
-			}
+			this.requestAppendEntries(peer);
+		}
+	}
+	
+	private void requestAppendEntries(PeerServer peer){
+		if(!peer.isBusy()){
+			peer.SendRequest(this.createAppendEntriesRequest(peer))
+				.whenCompleteAsync((RaftResponseMessage response, Throwable error) -> {
+					handlePeerResponse(response, error);
+				});
 		}
 	}
 	
@@ -345,35 +349,27 @@ public class RaftServer implements RaftMessageHandler {
 			return;
 		}
 		
+		boolean needToCatchup = true;
 		if(response.isAccepted()){
 			synchronized(peer){
-				if(this.role == ServerRole.Leader && !peer.isHeartbeatEnabled()){
-					// Enable heartbeat for this peer and start the heartbeat
-					this.enableHeartbeatForPeer(peer);
-				}
-				
 				peer.setNextLogIndex(response.getNextIndex());
 				peer.setMatchedIndex(response.getNextIndex() - 1);
+				needToCatchup = this.logStore.getFirstAvailableIndex() > peer.getNextLogIndex();
 			}
 			
 			// try to commit with this response
 			this.tryToCommit();
 		}else{
 			synchronized(peer){
-				// Stop heartbeating until this peer catches up all the logs
-				if(peer.isHeartbeatEnabled()){
-					peer.enableHeartbeat(false);
-				}
-				
 				peer.setNextLogIndex(peer.getNextLogIndex() - 1);
 			}
-			
-			// This may not be a leader anymore, such as the response was sent out long time ago
-	        // and the role was updated by UpdateTerm call
-	        // Try to match up the logs for this peer
-			if(this.role == ServerRole.Leader){
-				this.requestAppendEntries(false);
-			}
+		}
+		
+		// This may not be a leader anymore, such as the response was sent out long time ago
+        // and the role was updated by UpdateTerm call
+        // Try to match up the logs for this peer
+		if(this.role == ServerRole.Leader && needToCatchup){
+			this.requestAppendEntries(peer);
 		}
 	}
 	
@@ -403,12 +399,7 @@ public class RaftServer implements RaftMessageHandler {
 	private synchronized void handleHeartbeatTimeout(PeerServer peer){
 		this.logger.debug("Heartbeat timeout for %d", peer.getId());
 		if(this.role == ServerRole.Leader){
-			if(!peer.isBusy()){
-				peer.SendRequest(this.createAppendEntriesRequest(peer))
-				.whenCompleteAsync((RaftResponseMessage response, Throwable error) -> {
-					handlePeerResponse(response, error);
-				});
-			}
+			this.requestAppendEntries(peer);
 			
 			synchronized(peer){
 				if(peer.isHeartbeatEnabled()){
@@ -461,7 +452,7 @@ public class RaftServer implements RaftMessageHandler {
 			this.logStore.append(new LogEntry(this.state.getTerm(), this.config.toBytes(), LogValueType.Configuration));
 		}
 		
-		this.requestAppendEntries(true);
+		this.requestAppendEntries();
 	}
 	
 	private void enableHeartbeatForPeer(PeerServer peer){
@@ -517,7 +508,7 @@ public class RaftServer implements RaftMessageHandler {
 			
 			// Ask peers to commit the value
 			if(this.role == ServerRole.Leader){
-				this.requestAppendEntries(true);
+				this.requestAppendEntries();
 			}
 		}
 	}
