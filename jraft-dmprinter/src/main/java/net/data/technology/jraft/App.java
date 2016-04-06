@@ -7,7 +7,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Calendar;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Random;
 import java.util.StringTokenizer;
+import java.util.concurrent.CompletableFuture;
 
 import net.data.technology.jraft.extensions.FileBasedServerStateManager;
 import net.data.technology.jraft.extensions.Log4jLoggerFactory;
@@ -23,8 +28,13 @@ public class App
     		return;
     	}
     	
-    	if(!"server".equalsIgnoreCase(args[0]) && !"client".equalsIgnoreCase(args[0])){
+    	if(!"server".equalsIgnoreCase(args[0]) && !"client".equalsIgnoreCase(args[0]) && !"dummy".equalsIgnoreCase(args[0])){
     		System.out.println("only client and server modes are supported");
+    		return;
+    	}
+    	
+    	if("dummy".equalsIgnoreCase(args[0])){
+    		executeInDummyMode(args[1]);
     		return;
     	}
     	
@@ -94,4 +104,79 @@ public class App
     		System.out.println("Accepted: " + String.valueOf(accepted));
     	}
     }
+    
+    /**
+     * This is used to verify the rpc module's functionality
+     * @param mode
+     */
+    private static void executeInDummyMode(String mode) throws Exception{
+    	if("server".equalsIgnoreCase(mode)){
+    		RpcTcpListener listener = new RpcTcpListener(9001);
+    		listener.startListening(new DummyMessageHandler());
+    		System.in.read();
+    	}else{
+    		RpcClient client = new RpcTcpClientFactory().createRpcClient("tcp://localhost:9001");
+    		int batchSize = 100;
+    		List<CompletableFuture<RaftResponseMessage>> responses = new LinkedList<CompletableFuture<RaftResponseMessage>>();
+    		BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));
+    		System.out.print("ready to start?");
+    		reader.readLine();
+    		while(true){
+    			for(int i = 0; i < batchSize;  ++i){
+    				responses.add(client.send(randomRequest()));
+    			}
+    			
+    			for(int i = 0; i < batchSize; ++i){
+    				RaftResponseMessage response = responses.get(i).get();
+    				System.out.println(String.format(
+    						"Response %d: Accepted: %s, Src: %d, Dest: %d, MT: %s, NI: %d, T: %d", 
+    							i + 1,
+    							String.valueOf(response.isAccepted()),
+    							response.getSource(),
+    							response.getDestination(),
+    							response.getMessageType(),
+    							response.getNextIndex(),
+    							response.getTerm()));
+    			}
+    			
+    			System.out.print("Continue?");
+    			String answer = reader.readLine();
+    			if(!"yes".equalsIgnoreCase(answer)){
+    				break;
+    			}
+    		}
+    	}
+    }
+    
+    private static Random random = new Random(Calendar.getInstance().getTimeInMillis());
+    
+    private static RaftRequestMessage randomRequest(){
+    	RaftRequestMessage request = new RaftRequestMessage();
+		request.setMessageType(randomMessageType());;
+		request.setCommitIndex(random.nextLong());
+		request.setDestination(random.nextInt());
+		request.setLastLogIndex(random.nextLong());
+		request.setLastLogTerm(random.nextLong());
+		request.setSource(random.nextInt());
+		request.setTerm(random.nextLong());
+		LogEntry[] entries = new LogEntry[random.nextInt(20) + 1];
+		for(int i = 0; i < entries.length; ++i){
+			entries[i] = randomLogEntry();
+		}
+		
+		request.setLogEntries(entries);
+		return request;
+    }
+    
+    private static RaftMessageType randomMessageType(){
+		byte value = (byte)random.nextInt(5);
+		return RaftMessageType.fromByte((byte) (value + 1));
+	}
+	
+	private static LogEntry randomLogEntry(){
+		byte[] value = new byte[random.nextInt(20) + 1];
+		long term = random.nextLong();
+		random.nextBytes(value);
+		return new LogEntry(term, value, LogValueType.fromByte((byte)(random.nextInt(4) + 1)));
+	}
 }
