@@ -56,7 +56,7 @@ public class RpcTcpClient implements RpcClient {
 	private void sendAndRead(RaftRequestMessage request, CompletableFuture<RaftResponseMessage> future){
 		ByteBuffer buffer = ByteBuffer.wrap(BinaryUtils.messageToBytes(request));
 		try{
-			this.connection.write(buffer, null, handlerFrom((Integer bytesSent, Object attachment) -> {
+			AsyncUtility.writeToChannel(this.connection, buffer, null, handlerFrom((Integer bytesSent, Object attachment) -> {
 				if(bytesSent.intValue() < buffer.limit()){
 					logger.info("failed to sent the request to remote server.");
 					future.completeExceptionally(new IOException("Only partial of the data could be sent"));
@@ -98,7 +98,7 @@ public class RpcTcpClient implements RpcClient {
 	
 	private void readResponse(ByteBuffer responseBuffer, CompletionHandler<Integer, Object> handler, CompletableFuture<RaftResponseMessage> future){
 		try{
-			this.connection.read(responseBuffer, null, handler);
+			AsyncUtility.readFromChannel(this.connection, responseBuffer, null, handler);
 		}catch(Exception readError){
 			logger.info("failed to read from socket", readError);
 			future.completeExceptionally(readError);
@@ -132,8 +132,9 @@ public class RpcTcpClient implements RpcClient {
 			}
 			
 			task.future.completeExceptionally(new IOException("socket is closed, no more reads can be completed"));
-			this.readers.set(0);
 		}
+
+		this.readers.set(0);
 	}
 	
 	static class ReadTask{

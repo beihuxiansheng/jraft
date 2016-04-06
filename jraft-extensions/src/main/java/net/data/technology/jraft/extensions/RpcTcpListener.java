@@ -98,7 +98,7 @@ public class RpcTcpListener implements RpcListener {
 	private void readRequest(final AsynchronousSocketChannel connection, RaftMessageHandler messageHandler){
 		ByteBuffer buffer = ByteBuffer.allocate(BinaryUtils.RAFT_REQUEST_HEADER_SIZE);
 		try{
-			connection.read(buffer, messageHandler, handlerFrom((Integer bytesRead, final RaftMessageHandler handler) -> {
+			AsyncUtility.readFromChannel(connection, buffer, messageHandler, handlerFrom((Integer bytesRead, final RaftMessageHandler handler) -> {
 				if(bytesRead.intValue() < BinaryUtils.RAFT_REQUEST_HEADER_SIZE){
 					logger.info("failed to read the request header from client socket");
 					closeSocket(connection);
@@ -107,7 +107,7 @@ public class RpcTcpListener implements RpcListener {
 						final Pair<RaftRequestMessage, Integer> requestInfo = BinaryUtils.bytesToRequestMessage(buffer.array());
 						if(requestInfo.getSecond().intValue() > 0){
 							ByteBuffer logBuffer = ByteBuffer.allocate(requestInfo.getSecond().intValue());
-							connection.read(logBuffer, null, handlerFrom((Integer size, Object attachment) -> {
+							AsyncUtility.readFromChannel(connection, logBuffer, null, handlerFrom((Integer size, Object attachment) -> {
 								if(size.intValue() < requestInfo.getSecond().intValue()){
 									logger.info("failed to read the log entries data from client socket");
 									closeSocket(connection);
@@ -141,7 +141,7 @@ public class RpcTcpListener implements RpcListener {
 		try{
 			RaftResponseMessage response = messageHandler.processRequest(request);
 			final ByteBuffer buffer = ByteBuffer.wrap(BinaryUtils.messageToBytes(response));
-			connection.write(buffer, null, handlerFrom((Integer bytesSent, Object attachment) -> {
+			AsyncUtility.writeToChannel(connection, buffer, null, handlerFrom((Integer bytesSent, Object attachment) -> {
 				if(bytesSent.intValue() < buffer.limit()){
 					logger.info("failed to completely send the response.");
 					closeSocket(connection);
