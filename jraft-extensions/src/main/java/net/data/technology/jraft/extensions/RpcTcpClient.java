@@ -75,14 +75,18 @@ public class RpcTcpClient implements RpcClient {
 						
 						int waitingReaders = this.readers.decrementAndGet();
 						if(waitingReaders > 0){
+							this.logger.debug("there are pending readers in queue, will try to process them");
 							ReadTask task = this.readTasks.poll();
 							if(task != null){
 								this.readResponse(task.buffer, task.completionHandler, task.future);
+							}else{
+								this.logger.error("there are pending readers but get a null ReadTask");
 							}
 						}
 					}, future);
 					int readerCount = this.readers.getAndIncrement();
 					if(readerCount > 0){
+						this.logger.debug("there is a pending read, queue this read task");
 						this.readTasks.add(new ReadTask(responseBuffer, handler, future));
 					}else{
 						this.readResponse(responseBuffer, handler, future);
@@ -98,6 +102,7 @@ public class RpcTcpClient implements RpcClient {
 	
 	private void readResponse(ByteBuffer responseBuffer, CompletionHandler<Integer, Object> handler, CompletableFuture<RaftResponseMessage> future){
 		try{
+			this.logger.debug("reading response from socket...");
 			AsyncUtility.readFromChannel(this.connection, responseBuffer, null, handler);
 		}catch(Exception readError){
 			logger.info("failed to read from socket", readError);

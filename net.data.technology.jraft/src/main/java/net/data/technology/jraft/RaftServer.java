@@ -305,13 +305,16 @@ public class RaftServer implements RaftMessageHandler {
 		}
 	}
 	
-	private void requestAppendEntries(PeerServer peer){
+	private boolean requestAppendEntries(PeerServer peer){
 		if(peer.makeBusy()){
 			peer.SendRequest(this.createAppendEntriesRequest(peer))
 				.whenCompleteAsync((RaftResponseMessage response, Throwable error) -> {
 					handlePeerResponse(response, error);
 				});
+			return true;
 		}
+		
+		return false;
 	}
 	
 	private synchronized void handlePeerResponse(RaftResponseMessage response, Throwable error){
@@ -526,9 +529,14 @@ public class RaftServer implements RaftMessageHandler {
 			// save the commitment state
 			this.context.getServerStateManager().persistState(this.state);
 			
-			// set pending commit for peers, so that commits are replicated to peers timely
-			for(PeerServer peer : this.peers.values()){
-				peer.setPendingCommit();
+			// if this is a leader notify peers to commit as well
+			// for peers that are free, send the request, otherwise, set pending commit flag for that peer
+			if(this.role == ServerRole.Leader){
+				for(PeerServer peer : this.peers.values()){
+					if(!this.requestAppendEntries(peer)){
+						peer.setPendingCommit();
+					}
+				}
 			}
 		}
 	}
