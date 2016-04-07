@@ -104,6 +104,7 @@ public class RpcTcpListener implements RpcListener {
 					closeSocket(connection);
 				}else{
 					try{
+						logger.debug("request header read, try to see if there is a request body");
 						final Pair<RaftRequestMessage, Integer> requestInfo = BinaryUtils.bytesToRequestMessage(buffer.array());
 						if(requestInfo.getSecond().intValue() > 0){
 							ByteBuffer logBuffer = ByteBuffer.allocate(requestInfo.getSecond().intValue());
@@ -146,8 +147,9 @@ public class RpcTcpListener implements RpcListener {
 					logger.info("failed to completely send the response.");
 					closeSocket(connection);
 				}else{
-					logger.debug("response message sent.");
+					logger.debug(String.format("response message %d sent.", response.getDestination()));
 					if(connection.isOpen()){
+						logger.debug("try to read next request");
 						readRequest(connection, messageHandler);
 					}
 				}

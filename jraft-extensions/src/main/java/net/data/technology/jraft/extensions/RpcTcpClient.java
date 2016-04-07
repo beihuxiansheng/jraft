@@ -20,101 +20,124 @@ import net.data.technology.jraft.RpcClient;
 public class RpcTcpClient implements RpcClient {
 
 	private AsynchronousSocketChannel connection;
-	private ConcurrentLinkedQueue<ReadTask> readTasks;
+	private ConcurrentLinkedQueue<AsyncTask<ByteBuffer>> readTasks;
+	private ConcurrentLinkedQueue<AsyncTask<RaftRequestMessage>> writeTasks;
 	private AtomicInteger readers;
+	private AtomicInteger writers;
 	private InetSocketAddress remote;
 	private Logger logger;
 	
 	public RpcTcpClient(InetSocketAddress remote){
 		this.remote = remote;
 		this.logger = LogManager.getLogger(getClass());
-		this.readTasks = new ConcurrentLinkedQueue<ReadTask>();
+		this.readTasks = new ConcurrentLinkedQueue<AsyncTask<ByteBuffer>>();
+		this.writeTasks = new ConcurrentLinkedQueue<AsyncTask<RaftRequestMessage>>();
 		this.readers = new AtomicInteger(0);
+		this.writers = new AtomicInteger(0);
 	}
 	
 	@Override
 	public synchronized CompletableFuture<RaftResponseMessage> send(final RaftRequestMessage request) {
 		this.logger.debug(String.format("trying to send message %s to server %d at endpoint %s", request.getMessageType().toString(), request.getDestination(), this.remote.toString()));
-		final CompletableFuture<RaftResponseMessage> result = new CompletableFuture<RaftResponseMessage>();
+		CompletableFuture<RaftResponseMessage> result = new CompletableFuture<RaftResponseMessage>();
 		if(this.connection == null || !this.connection.isOpen()){
 			try{
 				this.connection = AsynchronousSocketChannel.open();
-				this.connection.connect(this.remote, null, handlerFrom((Void v, Object attachment) -> {
-					sendAndRead(request, result);
-				}, result));
+				this.connection.connect(this.remote, new AsyncTask<RaftRequestMessage>(request, result), handlerFrom((Void v, AsyncTask<RaftRequestMessage> task) -> {
+					sendAndRead(task, false);
+				}));
 			}catch(Throwable error){
 				closeSocket();
 				result.completeExceptionally(error);
 			}
 		}else{
-			this.sendAndRead(request, result);
+			this.sendAndRead(new AsyncTask<RaftRequestMessage>(request, result), false);
 		}
 		
 		return result;
 	}
 	
-	private void sendAndRead(RaftRequestMessage request, CompletableFuture<RaftResponseMessage> future){
-		ByteBuffer buffer = ByteBuffer.wrap(BinaryUtils.messageToBytes(request));
+	private void sendAndRead(AsyncTask<RaftRequestMessage> task, boolean skipQueueing){
+		if(!skipQueueing){
+			int writerCount = this.writers.getAndIncrement();
+			if(writerCount > 0){
+				this.logger.debug("there is a pending write, queue this write task");
+				this.writeTasks.add(task);
+				return;
+			}
+		}
+		
+		ByteBuffer buffer = ByteBuffer.wrap(BinaryUtils.messageToBytes(task.input));
 		try{
-			AsyncUtility.writeToChannel(this.connection, buffer, null, handlerFrom((Integer bytesSent, Object attachment) -> {
+			AsyncUtility.writeToChannel(this.connection, buffer, task, handlerFrom((Integer bytesSent, AsyncTask<RaftRequestMessage> context) -> {
 				if(bytesSent.intValue() < buffer.limit()){
 					logger.info("failed to sent the request to remote server.");
-					future.completeExceptionally(new IOException("Only partial of the data could be sent"));
+					context.future.completeExceptionally(new IOException("Only partial of the data could be sent"));
 					closeSocket();
 				}else{
 					// read the response
 					ByteBuffer responseBuffer = ByteBuffer.allocate(BinaryUtils.RAFT_RESPONSE_HEADER_SIZE);
-					CompletionHandler<Integer, Object> handler = handlerFrom((Integer bytesRead, Object state) -> {
-						if(bytesRead.intValue() < BinaryUtils.RAFT_RESPONSE_HEADER_SIZE){
-							logger.info("failed to read response from remote server.");
-							future.completeExceptionally(new IOException("Only part of the response data could be read"));
-							closeSocket();
-						}else{
-							future.complete(BinaryUtils.bytesToResponseMessage(responseBuffer.array()));
-						}
-						
-						int waitingReaders = this.readers.decrementAndGet();
-						if(waitingReaders > 0){
-							this.logger.debug("there are pending readers in queue, will try to process them");
-							ReadTask task = this.readTasks.poll();
-							if(task != null){
-								this.readResponse(task.buffer, task.completionHandler, task.future);
-							}else{
-								this.logger.error("there are pending readers but get a null ReadTask");
-							}
-						}
-					}, future);
-					int readerCount = this.readers.getAndIncrement();
-					if(readerCount > 0){
-						this.logger.debug("there is a pending read, queue this read task");
-						this.readTasks.add(new ReadTask(responseBuffer, handler, future));
-					}else{
-						this.readResponse(responseBuffer, handler, future);
-					}
+					this.readResponse(new AsyncTask<ByteBuffer>(responseBuffer, context.future), false);
 				}
-			}, future));
+
+				int waitingWriters = this.writers.decrementAndGet();
+				if(waitingWriters > 0){
+					this.logger.debug("there are pending writers in queue, will try to process them");
+					AsyncTask<RaftRequestMessage> pendingTask = null;
+					while((pendingTask = this.writeTasks.poll()) == null);
+					this.sendAndRead(pendingTask, true);
+				}
+			}));
 		}catch(Exception writeError){
 			logger.info("failed to write the socket", writeError);
-			future.completeExceptionally(writeError);
+			task.future.completeExceptionally(writeError);
 			closeSocket();
 		}
 	}
 	
-	private void readResponse(ByteBuffer responseBuffer, CompletionHandler<Integer, Object> handler, CompletableFuture<RaftResponseMessage> future){
+	private void readResponse(AsyncTask<ByteBuffer> task, boolean skipQueueing){
+		if(!skipQueueing){
+			int readerCount = this.readers.getAndIncrement();
+			if(readerCount > 0){
+				this.logger.debug("there is a pending read, queue this read task");
+				this.readTasks.add(task);
+				return;
+			}
+		}
+
+		CompletionHandler<Integer, AsyncTask<ByteBuffer>> handler = handlerFrom((Integer bytesRead, AsyncTask<ByteBuffer> context) -> {
+			if(bytesRead.intValue() < BinaryUtils.RAFT_RESPONSE_HEADER_SIZE){
+				logger.info("failed to read response from remote server.");
+				context.future.completeExceptionally(new IOException("Only part of the response data could be read"));
+				closeSocket();
+			}else{
+				RaftResponseMessage response = BinaryUtils.bytesToResponseMessage(context.input.array());
+				context.future.complete(response);
+			}
+			
+			int waitingReaders = this.readers.decrementAndGet();
+			if(waitingReaders > 0){
+				this.logger.debug("there are pending readers in queue, will try to process them");
+				AsyncTask<ByteBuffer> pendingTask = null;
+				while((pendingTask = this.readTasks.poll()) == null);
+				this.readResponse(pendingTask, true);
+			}
+		});
+		
 		try{
 			this.logger.debug("reading response from socket...");
-			AsyncUtility.readFromChannel(this.connection, responseBuffer, null, handler);
+			AsyncUtility.readFromChannel(this.connection, task.input, task, handler);
 		}catch(Exception readError){
 			logger.info("failed to read from socket", readError);
-			future.completeExceptionally(readError);
+			task.future.completeExceptionally(readError);
 			closeSocket();
 		}
 	}
 	
-	private <V, A> CompletionHandler<V, A> handlerFrom(BiConsumer<V, A> completed, CompletableFuture<RaftResponseMessage> future) {
-	    return AsyncUtility.handlerFrom(completed, (Throwable error, A attachment) -> {
+	private <V, I> CompletionHandler<V, AsyncTask<I>> handlerFrom(BiConsumer<V, AsyncTask<I>> completed) {
+	    return AsyncUtility.handlerFrom(completed, (Throwable error, AsyncTask<I> context) -> {
 	    				this.logger.info("socket error", error);
-	                    future.completeExceptionally(error);
+	                    context.future.completeExceptionally(error);
 	                    closeSocket();
 	                });
 	}
@@ -131,25 +154,33 @@ public class RpcTcpClient implements RpcClient {
     	}
 		
 		while(true){
-			ReadTask task = this.readTasks.poll();
+			AsyncTask<ByteBuffer> task = this.readTasks.poll();
 			if(task == null){
 				break;
 			}
 			
 			task.future.completeExceptionally(new IOException("socket is closed, no more reads can be completed"));
 		}
+		
+		while(true){
+			AsyncTask<RaftRequestMessage> task = this.writeTasks.poll();
+			if(task == null){
+				break;
+			}
+			
+			task.future.completeExceptionally(new IOException("socket is closed, no more writes can be completed"));
+		}
 
 		this.readers.set(0);
+		this.writers.set(0);
 	}
 	
-	static class ReadTask{
-		private ByteBuffer buffer;
-		private CompletionHandler<Integer, Object> completionHandler;
+	static class AsyncTask<TInput>{
+		private TInput input;
 		private CompletableFuture<RaftResponseMessage> future;
 		
-		ReadTask(ByteBuffer buffer, CompletionHandler<Integer, Object> completionHandler, CompletableFuture<RaftResponseMessage> future){
-			this.buffer = buffer;
-			this.completionHandler = completionHandler;
+		public AsyncTask(TInput input, CompletableFuture<RaftResponseMessage> future){
+			this.input = input;
 			this.future = future;
 		}
 	}

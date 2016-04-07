@@ -25,18 +25,18 @@ public class AsyncUtility {
 		try{
 			channel.read(
 					buffer,
-					attachment, 
+					new AsyncContext<A>(attachment, completionHandler),
 					handlerFrom(
-					(Integer result, A a) -> {
+					(Integer result, AsyncContext<A> a) -> {
 						int bytesRead = result.intValue();
 						if(bytesRead == -1 || !buffer.hasRemaining()){
-							completionHandler.completed(buffer.position(), attachment);
+							a.completionHandler.completed(buffer.position(), a.attachment);
 						}else{
-							readFromChannel(channel, buffer, attachment, completionHandler);
+							readFromChannel(channel, buffer, a.attachment, a.completionHandler);
 						}
 					}, 
-					(Throwable error, A a) -> {
-						completionHandler.failed(error, attachment);
+					(Throwable error, AsyncContext<A> a) -> {
+						a.completionHandler.failed(error, a.attachment);
 					}));
 		}catch(Throwable exception){
 			completionHandler.failed(exception, attachment);
@@ -47,21 +47,31 @@ public class AsyncUtility {
 		try{
 			channel.write(
 					buffer,
-					attachment, 
+					new AsyncContext<A>(attachment, completionHandler),
 					handlerFrom(
-					(Integer result, A a) -> {
+					(Integer result, AsyncContext<A> a) -> {
 						int bytesRead = result.intValue();
 						if(bytesRead == -1 || !buffer.hasRemaining()){
-							completionHandler.completed(buffer.position(), attachment);
+							a.completionHandler.completed(buffer.position(), a.attachment);
 						}else{
-							writeToChannel(channel, buffer, attachment, completionHandler);
+							writeToChannel(channel, buffer, a.attachment, a.completionHandler);
 						}
 					}, 
-					(Throwable error, A a) -> {
-						completionHandler.failed(error, attachment);
+					(Throwable error, AsyncContext<A> a) -> {
+						a.completionHandler.failed(error, a.attachment);
 					}));
 		}catch(Throwable exception){
 			completionHandler.failed(exception, attachment);
+		}
+	}
+	
+	static class AsyncContext<A>{
+		private A attachment;
+		private CompletionHandler<Integer, A> completionHandler;
+		
+		public AsyncContext(A attachment, CompletionHandler<Integer, A> handler){
+			this.attachment = attachment;
+			this.completionHandler = handler;
 		}
 	}
 }

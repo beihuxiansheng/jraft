@@ -116,27 +116,40 @@ public class App
     		System.in.read();
     	}else{
     		RpcClient client = new RpcTcpClientFactory().createRpcClient("tcp://localhost:9001");
-    		int batchSize = 100;
-    		List<CompletableFuture<RaftResponseMessage>> responses = new LinkedList<CompletableFuture<RaftResponseMessage>>();
+    		int batchSize = 1000;
+    		List<Pair<RaftRequestMessage, CompletableFuture<RaftResponseMessage> > > list = new LinkedList<Pair<RaftRequestMessage, CompletableFuture<RaftResponseMessage> > >();
     		BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));
     		System.out.print("ready to start?");
     		reader.readLine();
     		while(true){
     			for(int i = 0; i < batchSize;  ++i){
-    				responses.add(client.send(randomRequest()));
+    				RaftRequestMessage request = randomRequest();
+    				request.setSource(i);
+    				CompletableFuture<RaftResponseMessage> response = client.send(request);
+    				list.add(new Pair<RaftRequestMessage, CompletableFuture<RaftResponseMessage>>(request, response));
     			}
     			
     			for(int i = 0; i < batchSize; ++i){
-    				RaftResponseMessage response = responses.get(i).get();
+    				System.out.printf("Waiting for response %d\n", i);
+    				Pair<RaftRequestMessage, CompletableFuture<RaftResponseMessage> > item = list.get(i);
+    				RaftRequestMessage request = item.item1;
+    				RaftResponseMessage response = item.item2.get();
+    				
     				System.out.println(String.format(
     						"Response %d: Accepted: %s, Src: %d, Dest: %d, MT: %s, NI: %d, T: %d", 
-    							i + 1,
+    							i,
     							String.valueOf(response.isAccepted()),
     							response.getSource(),
     							response.getDestination(),
     							response.getMessageType(),
     							response.getNextIndex(),
     							response.getTerm()));
+    				
+    				if(request.getTerm() != response.getTerm()){
+    					System.out.printf("fatal: request and response are mismatched, %d v.s. %d @ %s!\n", request.getTerm(), response.getTerm(), item.item2.toString());
+    					reader.readLine();
+    					return;
+    				}
     			}
     			
     			System.out.print("Continue?");
@@ -144,6 +157,8 @@ public class App
     			if(!"yes".equalsIgnoreCase(answer)){
     				break;
     			}
+    			
+    			list.clear();
     		}
     	}
     }
@@ -178,5 +193,15 @@ public class App
 		long term = random.nextLong();
 		random.nextBytes(value);
 		return new LogEntry(term, value, LogValueType.fromByte((byte)(random.nextInt(4) + 1)));
+	}
+	
+	static class Pair<T1, T2>{
+		private T1 item1;
+		private T2 item2;
+		
+		public Pair(T1 item1, T2 item2){
+			this.item1 = item1;
+			this.item2 = item2;
+		}
 	}
 }
