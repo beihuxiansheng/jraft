@@ -21,7 +21,7 @@ public class RaftServer implements RaftMessageHandler {
 
 		@Override
 		public int compare(Long arg0, Long arg1) {
-			return (int)(arg0.longValue() - arg1.longValue());
+			return (int)(arg1.longValue() - arg0.longValue());
 		}};
 	private RaftContext context;
 	private ScheduledThreadPoolExecutor scheduler;
@@ -43,6 +43,7 @@ public class RaftServer implements RaftMessageHandler {
 	
 	// fields for extended messages
 	private PeerServer serverToJoin = null;
+	private boolean configChanging = false;
 	private boolean catchingUp = false;
 	private int steppingDown = 0;
 	// end fields for extended messages
@@ -719,25 +720,7 @@ public class RaftServer implements RaftMessageHandler {
 			}
 			
 			this.logger.debug("peer accepted to stepping down, removing this server from cluster");
-			PeerServer peer = this.peers.get(response.getSource());
-			if(peer.getHeartbeatTask() != null){
-				peer.getHeartbeatTask().cancel(false);
-			}
-			
-			peer.enableHeartbeat(false);
-			this.peers.remove(response.getSource());
-			ClusterConfiguration newConfig = new ClusterConfiguration();
-			newConfig.setLastLogIndex(this.config.getLogIndex());
-			newConfig.setLogIndex(this.logStore.getFirstAvailableIndex());
-			for(ClusterServer server: this.config.getServers()){
-				if(server.getId() != response.getSource()){
-					newConfig.getServers().add(server);
-				}
-			}
-			
-			this.logStore.append(new LogEntry(this.state.getTerm(), newConfig.toBytes(), LogValueType.Configuration));
-			this.config = newConfig;
-			this.requestAppendEntries();
+			this.removeServerFromCluster(response.getSource());
 		}else{
 			// No more response message types need to be handled
 			this.logger.error("received an unexpected response message type %s, for safety, stepping down", response.getMessageType());
@@ -757,12 +740,18 @@ public class RaftServer implements RaftMessageHandler {
 		if(rpcError != null){
 			this.logger.debug("it's a rpc error, see if we need to retry");
 			final RaftRequestMessage request = rpcError.getRequest();
-			if(request.getMessageType() == RaftMessageType.SyncLogRequest || request.getMessageType() == RaftMessageType.JoinClusterRequest){
-				final PeerServer server = this.serverToJoin;
+			if(request.getMessageType() == RaftMessageType.SyncLogRequest || request.getMessageType() == RaftMessageType.JoinClusterRequest || request.getMessageType() == RaftMessageType.LeaveClusterRequest){
+				final PeerServer server = (request.getMessageType() == RaftMessageType.LeaveClusterRequest) ? this.peers.get(request.getDestination()) : this.serverToJoin;
 				if(server != null){
 					if(server.getCurrentHeartbeatInterval() >= this.context.getRaftParameters().getMaxHeartbeatInterval()){
-						this.logger.info("rpc failed again for the new coming server (%d), will stop retry for this server", server.getId());
-						this.serverToJoin = null;
+						if(request.getMessageType() == RaftMessageType.LeaveClusterRequest){
+							this.logger.info("rpc failed again for the removing server (%d), will remove this server directly", server.getId());
+							this.removeServerFromCluster(server.getId());
+						}else{
+							this.logger.info("rpc failed again for the new coming server (%d), will stop retry for this server", server.getId());
+							this.configChanging = false;
+							this.serverToJoin = null;
+						}
 					}else{
 						// reuse the heartbeat interval value to indicate when to stop retrying, as rpc backoff is the same
 						this.logger.debug("retry the request");
@@ -803,7 +792,7 @@ public class RaftServer implements RaftMessageHandler {
 			return response;
 		}
 		
-		if(this.config.getLogIndex() == 0 || this.config.getLogIndex() > this.state.getCommitIndex()){
+		if(this.configChanging || this.config.getLogIndex() == 0 || this.config.getLogIndex() > this.state.getCommitIndex()){
 			// the previous config has not committed yet
 			this.logger.info("previous config has not committed yet");
 			return response;
@@ -821,6 +810,7 @@ public class RaftServer implements RaftMessageHandler {
 			return response;
 		}
 		
+		this.configChanging = true;
 		RaftRequestMessage leaveClusterRequest = new RaftRequestMessage();
 		leaveClusterRequest.setCommitIndex(this.state.getCommitIndex());
 		leaveClusterRequest.setDestination(peer.getId());
@@ -861,12 +851,13 @@ public class RaftServer implements RaftMessageHandler {
 			return response;
 		}
 		
-		if(this.config.getLogIndex() == 0 || this.config.getLogIndex() > this.state.getCommitIndex()){
+		if(this.configChanging || this.config.getLogIndex() == 0 || this.config.getLogIndex() > this.state.getCommitIndex()){
 			// the previous config has not committed yet
 			this.logger.info("previous config has not committed yet");
 			return response;
 		}
 		
+		this.configChanging = true;
 		this.serverToJoin = new PeerServer(server, this.context, peerServer -> {
 			this.handleHeartbeatTimeout(peerServer);
 		});
@@ -924,6 +915,7 @@ public class RaftServer implements RaftMessageHandler {
 			this.peers.put(this.serverToJoin.getId(), this.serverToJoin);
 			this.enableHeartbeatForPeer(this.serverToJoin);
 			this.serverToJoin = null;
+			this.configChanging = false;
 			this.requestAppendEntries();
 			return;
 		}
@@ -1003,5 +995,28 @@ public class RaftServer implements RaftMessageHandler {
 		response.setNextIndex(this.logStore.getFirstAvailableIndex());
 		response.setAccepted(true);
 		return response;
+	}
+	
+	private void removeServerFromCluster(int serverId){
+		PeerServer peer = this.peers.get(serverId);
+		if(peer.getHeartbeatTask() != null){
+			peer.getHeartbeatTask().cancel(false);
+		}
+		
+		peer.enableHeartbeat(false);
+		this.peers.remove(serverId);
+		ClusterConfiguration newConfig = new ClusterConfiguration();
+		newConfig.setLastLogIndex(this.config.getLogIndex());
+		newConfig.setLogIndex(this.logStore.getFirstAvailableIndex());
+		for(ClusterServer server: this.config.getServers()){
+			if(server.getId() != serverId){
+				newConfig.getServers().add(server);
+			}
+		}
+		
+		this.configChanging = false;
+		this.logStore.append(new LogEntry(this.state.getTerm(), newConfig.toBytes(), LogValueType.Configuration));
+		this.config = newConfig;
+		this.requestAppendEntries();
 	}
 }
