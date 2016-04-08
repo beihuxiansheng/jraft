@@ -72,7 +72,7 @@ public class App
     	while(true){
     		System.out.print("Message:");
     		String message = reader.readLine();
-    		if(message.startsWith("srv")){
+    		if(message.startsWith("addsrv")){
     			StringTokenizer tokenizer = new StringTokenizer(message, ";");
     			ArrayList<String> values = new ArrayList<String>();
     			while(tokenizer.hasMoreTokens()){
@@ -97,6 +97,12 @@ public class App
     				boolean accepted = client.appendEntries(new byte[][]{ msg.getBytes() }).get();
     	    		System.out.println("Accepted: " + String.valueOf(accepted));
     			}
+    			continue;
+    		}else if(message.startsWith("rmsrv:")){
+    			String text = message.substring(6);
+    			int serverId = Integer.parseInt(text.trim());
+    			boolean accepted = client.removeServer(serverId).get();
+    			System.out.println("Accepted: " + String.valueOf(accepted));
     			continue;
     		}
     		

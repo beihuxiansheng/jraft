@@ -44,8 +44,7 @@ public class RaftServer implements RaftMessageHandler {
 	// fields for extended messages
 	private PeerServer serverToJoin = null;
 	private boolean catchingUp = false;
-	//TODO add more
-	
+	private int steppingDown = 0;
 	// end fields for extended messages
 	
 	public RaftServer(RaftContext context){
@@ -247,6 +246,18 @@ public class RaftServer implements RaftMessageHandler {
 	}
 
 	private synchronized void handleElectionTimeout(){
+		if(this.steppingDown > 0){
+			if(--this.steppingDown == 0){
+				this.logger.info("no hearing further news from leader, step down");
+				System.exit(0);
+				return;
+			}
+			
+			this.logger.info("stepping down (cycles left: %d), skip this election timeout event", this.steppingDown);
+			this.restartElectionTimer();
+			return;
+		}
+		
 		if(this.role == ServerRole.Leader){
 			this.logger.error("A leader should never encounter election timeout, illegal application state, stop the application");
 			System.exit(-1);
@@ -300,6 +311,11 @@ public class RaftServer implements RaftMessageHandler {
 	}
 	
 	private void requestAppendEntries(){
+		if(this.peers.size() == 0){
+			this.commit(this.logStore.getFirstAvailableIndex() - 1);
+			return;
+		}
+		
 		for(PeerServer peer : this.peers.values()){
 			this.requestAppendEntries(peer);
 		}
@@ -483,10 +499,11 @@ public class RaftServer implements RaftMessageHandler {
 	private void becomeFollower(){
 		// stop heartbeat for all peers
 		for(PeerServer server : this.peers.values()){
-			server.enableHeartbeat(false);
 			if(server.getHeartbeatTask() != null){
 				server.getHeartbeatTask().cancel(false);
 			}
+
+			server.enableHeartbeat(false);
 		}
 		
 		this.role = ServerRole.Follower;
@@ -510,9 +527,9 @@ public class RaftServer implements RaftMessageHandler {
 	
 	private void commit(long targetIndex){
 		if(targetIndex > this.state.getCommitIndex()){
-			while(this.state.getCommitIndex() < targetIndex && this.state.getCommitIndex() < this.logStore.getFirstAvailableIndex() - 1){
-				long indexToCommit = this.state.getCommitIndex() + 1;
-				try{
+			try{
+				while(this.state.getCommitIndex() < targetIndex && this.state.getCommitIndex() < this.logStore.getFirstAvailableIndex() - 1){
+					long indexToCommit = this.state.getCommitIndex() + 1;
 					LogEntry logEntry = this.logStore.getLogEntryAt(indexToCommit);
 					if(logEntry.getValueType() == LogValueType.Application){
 						this.stateMachine.commit(indexToCommit, this.logStore.getLogEntryAt(indexToCommit).getValue());
@@ -521,9 +538,9 @@ public class RaftServer implements RaftMessageHandler {
 					}
 					
 					this.state.setCommitIndex(indexToCommit);
-				}catch(Throwable error){
-					this.logger.error("failed to commit at index %d, due to errors %s", indexToCommit, error.toString());
 				}
+			}catch(Throwable error){
+				this.logger.error("failed to commit to index %d, due to errors %s", targetIndex, error.toString());
 			}
 			
 			// save the commitment state
@@ -632,11 +649,11 @@ public class RaftServer implements RaftMessageHandler {
 		
 		for(Integer id : serversRemoved){
 			PeerServer peer = this.peers.get(id);
-			peer.enableHeartbeat(false);
 			if(peer.getHeartbeatTask() != null){
 				peer.getHeartbeatTask().cancel(false);
 			}
-			
+
+			peer.enableHeartbeat(false);
 			this.peers.remove(id);
 			this.logger.info("server %d is removed from cluster", id.intValue());
 		}
@@ -654,7 +671,10 @@ public class RaftServer implements RaftMessageHandler {
 		}else if(request.getMessageType() == RaftMessageType.JoinClusterRequest){
 			return this.handleJoinClusterRequest(request);
 		}else if(request.getMessageType() == RaftMessageType.LeaveClusterRequest){
-			//TODO handle LeaveClusterRequest
+			return this.handleLeaveClusterRequest(request);
+		}else{
+			this.logger.error("receive an unknown request %s, for safety, step down.", request.getMessageType().toString());
+			System.exit(-1);
 		}
 		
 		return null;
@@ -692,9 +712,37 @@ public class RaftServer implements RaftMessageHandler {
 			}else{
 				this.logger.debug("no server to join, drop the message");
 			}
+		}else if(response.getMessageType() == RaftMessageType.LeaveClusterResponse){
+			if(!response.isAccepted()){
+				this.logger.info("peer doesn't accept to stepping down, stop proceeding");
+				return;
+			}
+			
+			this.logger.debug("peer accepted to stepping down, removing this server from cluster");
+			PeerServer peer = this.peers.get(response.getSource());
+			if(peer.getHeartbeatTask() != null){
+				peer.getHeartbeatTask().cancel(false);
+			}
+			
+			peer.enableHeartbeat(false);
+			this.peers.remove(response.getSource());
+			ClusterConfiguration newConfig = new ClusterConfiguration();
+			newConfig.setLastLogIndex(this.config.getLogIndex());
+			newConfig.setLogIndex(this.logStore.getFirstAvailableIndex());
+			for(ClusterServer server: this.config.getServers()){
+				if(server.getId() != response.getSource()){
+					newConfig.getServers().add(server);
+				}
+			}
+			
+			this.logStore.append(new LogEntry(this.state.getTerm(), newConfig.toBytes(), LogValueType.Configuration));
+			this.config = newConfig;
+			this.requestAppendEntries();
+		}else{
+			// No more response message types need to be handled
+			this.logger.error("received an unexpected response message type %s, for safety, stepping down", response.getMessageType());
+			System.exit(-1);
 		}
-		// TODO handle all extended responses
-		// for SyncLogResponse
 	}
 	
 	private void handleExtendedResponseError(Throwable error){
@@ -755,6 +803,12 @@ public class RaftServer implements RaftMessageHandler {
 			return response;
 		}
 		
+		if(this.config.getLogIndex() == 0 || this.config.getLogIndex() > this.state.getCommitIndex()){
+			// the previous config has not committed yet
+			this.logger.info("previous config has not committed yet");
+			return response;
+		}
+		
 		int serverId = ByteBuffer.wrap(logEntries[0].getValue()).getInt();
 		if(serverId == this.id){
 			this.logger.info("cannot request to remove leader");
@@ -767,18 +821,17 @@ public class RaftServer implements RaftMessageHandler {
 			return response;
 		}
 		
-		ClusterConfiguration newConfig = new ClusterConfiguration();
-		newConfig.setLastLogIndex(this.config.getLogIndex());
-		newConfig.setLogIndex(this.logStore.getFirstAvailableIndex());
-		for(ClusterServer server: this.config.getServers()){
-			if(server.getId() != serverId){
-				newConfig.getServers().add(server);
-			}
-		}
-		
-		this.logStore.append(new LogEntry(this.state.getTerm(), newConfig.toBytes(), LogValueType.Configuration));
-		this.reconfigure(newConfig);
-		response.setNextIndex(this.logStore.getFirstAvailableIndex());
+		RaftRequestMessage leaveClusterRequest = new RaftRequestMessage();
+		leaveClusterRequest.setCommitIndex(this.state.getCommitIndex());
+		leaveClusterRequest.setDestination(peer.getId());
+		leaveClusterRequest.setLastLogIndex(this.logStore.getFirstAvailableIndex() - 1);
+		leaveClusterRequest.setLastLogTerm(0);
+		leaveClusterRequest.setTerm(this.state.getTerm());
+		leaveClusterRequest.setMessageType(RaftMessageType.LeaveClusterRequest);
+		leaveClusterRequest.setSource(this.id);
+		peer.SendRequest(leaveClusterRequest).whenCompleteAsync((RaftResponseMessage peerResponse, Throwable error) -> {
+			this.handleExtendedResponse(peerResponse, error);
+		});
 		response.setAccepted(true);
 		return response;
 	}
@@ -869,9 +922,9 @@ public class RaftServer implements RaftMessageHandler {
 			this.logStore.append(configEntry);
 			this.config = newConfig;
 			this.peers.put(this.serverToJoin.getId(), this.serverToJoin);
-			this.requestAppendEntries(this.serverToJoin);
 			this.enableHeartbeatForPeer(this.serverToJoin);
 			this.serverToJoin = null;
+			this.requestAppendEntries();
 			return;
 		}
 		
@@ -936,6 +989,18 @@ public class RaftServer implements RaftMessageHandler {
 		this.stopElectionTimer();
 		ClusterConfiguration newConfig = ClusterConfiguration.fromBytes(logEntries[0].getValue());
 		this.reconfigure(newConfig);
+		response.setAccepted(true);
+		return response;
+	}
+	
+	private RaftResponseMessage handleLeaveClusterRequest(RaftRequestMessage request){
+		this.steppingDown = 2;
+		RaftResponseMessage response = new RaftResponseMessage();
+		response.setSource(this.id);
+		response.setDestination(request.getSource());
+		response.setTerm(this.state.getTerm());
+		response.setMessageType(RaftMessageType.LeaveClusterResponse);
+		response.setNextIndex(this.logStore.getFirstAvailableIndex());
 		response.setAccepted(true);
 		return response;
 	}

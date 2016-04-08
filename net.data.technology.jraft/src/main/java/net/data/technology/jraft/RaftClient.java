@@ -1,5 +1,6 @@
 package net.data.technology.jraft;
 
+import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Timer;
@@ -14,11 +15,13 @@ public class RaftClient {
 	private Logger logger;
 	private Timer timer;
 	private int leaderId;
+	private boolean randomLeader;
 	
 	public RaftClient(RpcClientFactory rpcClientFactory, ClusterConfiguration configuration, LoggerFactory loggerFactory){
 		this.rpcClientFactory = rpcClientFactory;
 		this.configuration = configuration;
 		this.leaderId = configuration.getServers().get(0).getId();
+		this.randomLeader = true;
 		this.logger = loggerFactory.getLogger(getClass());
 		this.timer = new Timer();
 	}
@@ -58,6 +61,24 @@ public class RaftClient {
 		return result;
 	}
 	
+	public CompletableFuture<Boolean> removeServer(int serverId){
+		if(serverId < 0){
+			throw new IllegalArgumentException("serverId must be equal or greater than zero");
+		}
+		
+		ByteBuffer buffer = ByteBuffer.allocate(Integer.BYTES);
+		buffer.putInt(serverId);
+		LogEntry[] logEntries = new LogEntry[1];
+		logEntries[0] = new LogEntry(0, buffer.array(), LogValueType.ClusterServer);
+		RaftRequestMessage request = new RaftRequestMessage();
+		request.setMessageType(RaftMessageType.RemoveServerRequest);
+		request.setLogEntries(logEntries);
+		
+		CompletableFuture<Boolean> result = new CompletableFuture<Boolean>();
+		this.tryCurrentLeader(request, result, 0, 0);
+		return result;
+	}
+	
 	private void tryCurrentLeader(RaftRequestMessage request, CompletableFuture<Boolean> future, int rpcBackoff, int retry){
 		logger.debug("trying request to %d as current leader", this.leaderId);
 		getOrCreateRpcClient().send(request).whenCompleteAsync((RaftResponseMessage response, Throwable error) -> {
@@ -67,8 +88,13 @@ public class RaftClient {
 					future.complete(true);
 				}else{
 					// set the leader return from the server
-					this.leaderId = response.getDestination();
-					tryCurrentLeader(request, future, rpcBackoff, retry);
+					if(this.leaderId == response.getDestination() && !this.randomLeader){
+						future.complete(false);
+					}else{
+						this.randomLeader = false;
+						this.leaderId = response.getDestination();
+						tryCurrentLeader(request, future, rpcBackoff, retry);
+					}
 				}
 			}else{
 				logger.info("rpc error, failed to send request to remote server (%s)", error.getMessage());
@@ -81,6 +107,7 @@ public class RaftClient {
 				for(ClusterServer server : this.configuration.getServers()){
 					if(server.getId() != this.leaderId){
 						this.leaderId = server.getId();
+						this.randomLeader = true;
 						break;
 					}
 				}
@@ -130,6 +157,8 @@ public class RaftClient {
 		}
 		
 		logger.info("no endpoint could be found for leader %d, that usually means no leader is elected, retry the first one", this.leaderId);
+		this.randomLeader = true;
+		this.leaderId = this.configuration.getServers().get(0).getId();
 		return this.configuration.getServers().get(0).getEndpoint();
 	}
 }
