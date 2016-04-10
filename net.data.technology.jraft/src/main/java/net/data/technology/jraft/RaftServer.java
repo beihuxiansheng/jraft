@@ -70,18 +70,29 @@ public class RaftServer implements RaftMessageHandler {
 				return null;
 			}};
 		
+		
+		if(this.state == null){
+			this.state = new ServerState();
+			this.state.setTerm(0);
+			this.state.setVotedFor(-1);
+			this.state.setCommitIndex(0);
+		}
+
+		// try to load uncommitted 
+		for(long i = this.state.getCommitIndex() + 1; i < this.logStore.getFirstAvailableIndex(); ++i){
+			LogEntry logEntry = this.logStore.getLogEntryAt(i);
+			if(logEntry.getValueType() == LogValueType.Configuration){
+				this.config = ClusterConfiguration.fromBytes(logEntry.getValue());
+				break;
+			}
+		}
+		
 		for(ClusterServer server : this.config.getServers()){
 			if(server.getId() != this.id){
 				this.peers.put(server.getId(), new PeerServer(server, context, peerServer -> this.handleHeartbeatTimeout(peerServer)));
 			}
 		}
 		
-		if(this.state == null){
-			this.state = new ServerState();
-			this.state.setTerm(0);
-			this.state.setVotedFor(-1);
-		}
-
 		this.role = ServerRole.Follower;
 		this.restartElectionTimer();
 		this.logger.info("Server %d started", this.id);
