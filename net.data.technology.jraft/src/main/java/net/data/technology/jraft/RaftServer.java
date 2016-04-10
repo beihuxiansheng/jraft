@@ -112,6 +112,11 @@ public class RaftServer implements RaftMessageHandler {
 		if(request.getMessageType() == RaftMessageType.AppendEntriesRequest || request.getMessageType() == RaftMessageType.RequestVoteRequest){
 			// we allow the server to be continue after term updated to save a round message
 			this.updateTerm(request.getTerm());
+			
+			// Reset stepping down value to prevent this server goes down when leader crashes after sending a LeaveClusterRequest
+			if(this.steppingDown > 0){
+				this.steppingDown = 2;
+			}
 		}
 	
 		RaftResponseMessage response = null;
