@@ -1,8 +1,10 @@
 package net.data.technology.jraft;
 
 import java.nio.ByteBuffer;
+import java.util.Calendar;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Random;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.CompletableFuture;
@@ -16,11 +18,13 @@ public class RaftClient {
 	private Timer timer;
 	private int leaderId;
 	private boolean randomLeader;
+	private Random random;
 	
 	public RaftClient(RpcClientFactory rpcClientFactory, ClusterConfiguration configuration, LoggerFactory loggerFactory){
+		this.random = new Random(Calendar.getInstance().getTimeInMillis());
 		this.rpcClientFactory = rpcClientFactory;
 		this.configuration = configuration;
-		this.leaderId = configuration.getServers().get(0).getId();
+		this.leaderId = configuration.getServers().get(this.random.nextInt(configuration.getServers().size())).getId();
 		this.randomLeader = true;
 		this.logger = loggerFactory.getLogger(getClass());
 		this.timer = new Timer();
@@ -104,14 +108,8 @@ public class RaftClient {
 				}
 				
 				// try a random server as leader
-				for(ClusterServer server : this.configuration.getServers()){
-					if(server.getId() != this.leaderId){
-						this.leaderId = server.getId();
-						this.randomLeader = true;
-						break;
-					}
-				}
-				
+				this.leaderId = this.configuration.getServers().get(this.random.nextInt(this.configuration.getServers().size())).getId();
+				this.randomLeader = true;
 				refreshRpcClient();
 				
 				if(rpcBackoff > 0){

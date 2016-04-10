@@ -140,11 +140,6 @@ public class RaftServer implements RaftMessageHandler {
 	}
 	
 	private RaftResponseMessage handleAppendEntriesRequest(RaftRequestMessage request){
-		if(this.catchingUp){
-			this.logger.debug("stop log syncing mode");
-			this.catchingUp = false;
-		}
-		
 		if(request.getTerm() == this.state.getTerm()){
 			if(this.role == ServerRole.Candidate){
 				this.becomeFollower();
@@ -268,6 +263,11 @@ public class RaftServer implements RaftMessageHandler {
 			this.logger.info("stepping down (cycles left: %d), skip this election timeout event", this.steppingDown);
 			this.restartElectionTimer();
 			return;
+		}
+		
+		if(this.catchingUp){
+			// this is a new server for the cluster, will not send out vote request until the config that includes this server is committed
+			this.logger.info("election timeout while joining the cluster, ignore it.");
 		}
 		
 		if(this.role == ServerRole.Leader){
@@ -547,6 +547,10 @@ public class RaftServer implements RaftMessageHandler {
 						this.stateMachine.commit(indexToCommit, this.logStore.getLogEntryAt(indexToCommit).getValue());
 					}else if(logEntry.getValueType() == LogValueType.Configuration){
 						this.context.getServerStateManager().saveClusterConfiguration(this.config);
+						if(this.catchingUp && this.config.getServer(this.id) != null){
+							this.logger.info("this server is committed as one of cluster members");
+							this.catchingUp = false;
+						}
 					}
 					
 					this.state.setCommitIndex(indexToCommit);
