@@ -14,9 +14,11 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class RaftServer implements RaftMessageHandler {
 
+	private static final int DEFAULT_SNAPSHOT_SYNC_BLOCK_SIZE = 4 * 1024;
 	private static final Comparator<Long> indexComparator = new Comparator<Long>(){
 
 		@Override
@@ -46,6 +48,7 @@ public class RaftServer implements RaftMessageHandler {
 	private boolean configChanging = false;
 	private boolean catchingUp = false;
 	private int steppingDown = 0;
+	private AtomicInteger snapshotInProgress;
 	// end fields for extended messages
 	
 	public RaftServer(RaftContext context){
@@ -58,6 +61,7 @@ public class RaftServer implements RaftMessageHandler {
 		this.votesResponded = 0;
 		this.leader = -1;
 		this.electionCompleted = false;
+		this.snapshotInProgress = new AtomicInteger(0);
 		this.context = context;
 		this.logger = context.getLoggerFactory().getLogger(this.getClass());
 		this.random = new Random(Calendar.getInstance().getTimeInMillis());
@@ -78,7 +82,7 @@ public class RaftServer implements RaftMessageHandler {
 			this.state.setCommitIndex(0);
 		}
 
-		// try to load uncommitted 
+		// try to load uncommitted, no need to check snapshots
 		for(long i = this.state.getCommitIndex() + 1; i < this.logStore.getFirstAvailableIndex(); ++i){
 			LogEntry logEntry = this.logStore.getLogEntryAt(i);
 			if(logEntry.getValueType() == LogValueType.Configuration){
@@ -109,7 +113,9 @@ public class RaftServer implements RaftMessageHandler {
 				request.getLogEntries() == null ? 0 : request.getLogEntries().length,
 				request.getCommitIndex(),
 				request.getTerm());
-		if(request.getMessageType() == RaftMessageType.AppendEntriesRequest || request.getMessageType() == RaftMessageType.RequestVoteRequest){
+		if(request.getMessageType() == RaftMessageType.AppendEntriesRequest 
+			|| request.getMessageType() == RaftMessageType.RequestVoteRequest
+			|| request.getMessageType() == RaftMessageType.InstallSnapshotRequest){
 			// we allow the server to be continue after term updated to save a round message
 			this.updateTerm(request.getTerm());
 			
@@ -347,6 +353,7 @@ public class RaftServer implements RaftMessageHandler {
 			return true;
 		}
 		
+		this.logger.debug("Server %d is busy, skip the request", peer.getId());
 		return false;
 	}
 	
@@ -378,6 +385,8 @@ public class RaftServer implements RaftMessageHandler {
 			this.handleVotingResponse(response);
 		}else if(response.getMessageType() == RaftMessageType.AppendEntriesResponse){
 			this.handleAppendEntriesResponse(response);
+		}else if(response.getMessageType() == RaftMessageType.InstallSnapshotResponse){
+			this.handleInstallSnapshotResponse(response);
 		}else{
 			this.logger.error("Received an unexpected message %s for response, system exits.", response.getMessageType().toString());
 			System.exit(-1);
@@ -413,6 +422,49 @@ public class RaftServer implements RaftMessageHandler {
 			synchronized(peer){
 				peer.setNextLogIndex(peer.getNextLogIndex() - 1);
 			}
+		}
+		
+		peer.setFree();
+		
+		// This may not be a leader anymore, such as the response was sent out long time ago
+        // and the role was updated by UpdateTerm call
+        // Try to match up the logs for this peer
+		if(this.role == ServerRole.Leader && needToCatchup){
+			this.requestAppendEntries(peer);
+		}
+	}
+	
+	private void handleInstallSnapshotResponse(RaftResponseMessage response){
+		PeerServer peer = this.peers.get(response.getSource());
+		if(peer == null){
+			this.logger.info("the response is from an unkonw peer %d", response.getSource());
+			return;
+		}
+		
+		// If there are pending logs to be synced or commit index need to be advanced, continue to send appendEntries to this peer
+		boolean needToCatchup = true;
+		if(response.isAccepted()){
+			synchronized(peer){
+				SnapshotSyncContext context = peer.getSnapshotSyncContext();
+				if(context == null){
+					this.logger.info("no snapshot sync context for this peer, drop the response");
+					needToCatchup = false;
+				}else{
+					if(response.getNextIndex() >= context.getSnapshot().getSize()){
+						this.logger.debug("snapshot sync is done");
+						peer.setNextLogIndex(context.getSnapshot().getLastLogIndex() + 1);
+						peer.setMatchedIndex(context.getSnapshot().getLastLogIndex());
+						peer.setSnapshotInSync(null);
+						needToCatchup = peer.clearPendingCommit() || response.getNextIndex() < this.logStore.getFirstAvailableIndex();
+					}else{
+						this.logger.debug("continue to sync snapshot at offset %d", response.getNextIndex());
+						context.setOffset(response.getNextIndex());
+					}
+				}
+			}
+
+		}else{
+			this.logger.info("peer declines to install the snapshot, will retry");
 		}
 		
 		peer.setFree();
@@ -467,11 +519,18 @@ public class RaftServer implements RaftMessageHandler {
 	}
 	
 	private void restartElectionTimer(){
+		// don't start the election timer while this server is still catching up the logs
+		if(this.catchingUp){
+			return;
+		}
+		
 		if(this.scheduledElection != null){
 			this.scheduledElection.cancel(false);
 		}
 
-		this.scheduleElectionTimeout();
+		RaftParameters parameters = this.context.getRaftParameters();
+		int electionTimeout = parameters.getElectionTimeoutLowerBound() + this.random.nextInt(parameters.getElectionTimeoutUpperBound() - parameters.getElectionTimeoutLowerBound() + 1);
+		this.scheduledElection = this.scheduler.schedule(this.electionTimeoutTask, electionTimeout, TimeUnit.MILLISECONDS);
 	}
 	
 	private void stopElectionTimer(){
@@ -484,17 +543,14 @@ public class RaftServer implements RaftMessageHandler {
 		this.scheduledElection = null;
 	}
 	
-	private void scheduleElectionTimeout(){
-		RaftParameters parameters = this.context.getRaftParameters();
-		int electionTimeout = parameters.getElectionTimeoutLowerBound() + this.random.nextInt(parameters.getElectionTimeoutUpperBound() - parameters.getElectionTimeoutLowerBound() + 1);
-		this.scheduledElection = this.scheduler.schedule(this.electionTimeoutTask, electionTimeout, TimeUnit.MILLISECONDS);
-	}
-	
 	private void becomeLeader(){
 		this.stopElectionTimer();
 		this.role = ServerRole.Leader;
 		this.leader = this.id;
+		this.serverToJoin = null;
 		for(PeerServer server : this.peers.values()){
+			server.setNextLogIndex(this.logStore.getFirstAvailableIndex());
+			server.setSnapshotInSync(null);
 			this.enableHeartbeatForPeer(server);
 		}
 		
@@ -523,6 +579,7 @@ public class RaftServer implements RaftMessageHandler {
 			server.enableHeartbeat(false);
 		}
 		
+		this.serverToJoin = null;
 		this.role = ServerRole.Follower;
 		this.restartElectionTimer();
 	}
@@ -549,7 +606,7 @@ public class RaftServer implements RaftMessageHandler {
 					long indexToCommit = this.state.getCommitIndex() + 1;
 					LogEntry logEntry = this.logStore.getLogEntryAt(indexToCommit);
 					if(logEntry.getValueType() == LogValueType.Application){
-						this.stateMachine.commit(indexToCommit, this.logStore.getLogEntryAt(indexToCommit).getValue());
+						this.stateMachine.commit(indexToCommit, logEntry.getValue());
 					}else if(logEntry.getValueType() == LogValueType.Configuration){
 						this.context.getServerStateManager().saveClusterConfiguration(this.config);
 						if(this.catchingUp && this.config.getServer(this.id) != null){
@@ -559,6 +616,62 @@ public class RaftServer implements RaftMessageHandler {
 					}
 					
 					this.state.setCommitIndex(indexToCommit);
+					
+					// see if we need to do snapshots
+					if(this.context.getRaftParameters().getSnapshotDistance() > 0 
+						&& (indexToCommit - this.logStore.getStartIndex() > this.context.getRaftParameters().getSnapshotDistance())
+						&& this.snapshotInProgress.compareAndSet(0, 1)){
+						
+						Snapshot currentSnapshot = this.stateMachine.getLastSnapshot();
+						if(currentSnapshot != null && indexToCommit - currentSnapshot.getLastLogIndex() < this.context.getRaftParameters().getSnapshotDistance()){
+							this.logger.info("a very recent snapshot is available at index %d, will skip this one", currentSnapshot.getLastLogIndex());
+						}else{
+							this.logger.info("creating a snapshot for index %d", indexToCommit);
+							
+							// get the latest configuration info
+							ClusterConfiguration config = this.config;
+							while(config.getLogIndex() > indexToCommit && config.getLastLogIndex() >= this.logStore.getStartIndex()){
+								config = ClusterConfiguration.fromBytes(this.logStore.getLogEntryAt(config.getLastLogIndex()).getValue());
+							}
+							
+							if(config.getLogIndex() > indexToCommit && config.getLastLogIndex() > 0 && config.getLastLogIndex() < this.logStore.getStartIndex()){
+								Snapshot lastSnapshot = this.stateMachine.getLastSnapshot();
+								if(lastSnapshot == null){
+									this.logger.error("No snapshot could be found while no configuration cannot be found in current committed logs, this is a system error, exiting");
+									System.exit(-1);
+									return;
+								}
+								
+								config = lastSnapshot.getLastConfig();
+							}else if(config.getLogIndex() > indexToCommit && config.getLastLogIndex() == 0){
+								this.logger.error("BUG!!! stop the system, there must be a configuration at index one");
+								System.exit(-1);
+							}
+							
+							Snapshot snapshot = new Snapshot(indexToCommit, logEntry.getTerm(), config);
+							this.stateMachine.createSnapshot(snapshot).whenCompleteAsync((Boolean result, Throwable error) -> {
+								this.snapshotInProgress.set(0);
+								if(error != null){
+									this.logger.error("failed to create a snapshot due to %s", error.getMessage());
+									return;
+								}
+								
+								if(!result.booleanValue()){
+									this.logger.info("the state machine rejects to create the snapshot");
+									return;
+								}
+								
+								synchronized(this){
+									this.logger.debug("snapshot created, compact the log store");
+									try{
+										this.logStore.compact(snapshot.getLastLogIndex());
+									}catch(Throwable ex){
+										this.logger.error("failed to compact the log store, no worries, the system still in a good shape", ex);
+									}
+								}
+							});
+						}
+					}
 				}
 			}catch(Throwable error){
 				this.logger.error("failed to commit to index %d, due to errors %s", targetIndex, error.toString());
@@ -584,8 +697,10 @@ public class RaftServer implements RaftMessageHandler {
 		long commitIndex = 0;
 		long lastLogIndex = 0;
 		long term = 0;
+		long startingIndex = 1;
 		
 		synchronized(this){
+			startingIndex = this.logStore.getStartIndex();
 			currentNextIndex = this.logStore.getFirstAvailableIndex();
 			commitIndex = this.state.getCommitIndex();
 			term = this.state.getTerm();
@@ -602,6 +717,11 @@ public class RaftServer implements RaftMessageHandler {
 		if(lastLogIndex >= currentNextIndex){
 			this.logger.error("Peer's lastLogIndex is too large %d v.s. %d, server exits", lastLogIndex, currentNextIndex);
 			System.exit(-1);
+		}
+		
+		// for syncing the snapshots
+		if(lastLogIndex > 0 && lastLogIndex < startingIndex){
+			return this.createSyncSnapshotRequest(peer, lastLogIndex, term, commitIndex);
 		}
 		
 		LogEntry lastLogEntry = lastLogIndex > 0 ? this.logStore.getLogEntryAt(lastLogIndex) : null;
@@ -693,6 +813,8 @@ public class RaftServer implements RaftMessageHandler {
 			return this.handleJoinClusterRequest(request);
 		}else if(request.getMessageType() == RaftMessageType.LeaveClusterRequest){
 			return this.handleLeaveClusterRequest(request);
+		}else if(request.getMessageType() == RaftMessageType.InstallSnapshotRequest){
+			return this.handleInstallSnapshotRequest(request);
 		}else{
 			this.logger.error("receive an unknown request %s, for safety, step down.", request.getMessageType().toString());
 			System.exit(-1);
@@ -701,7 +823,77 @@ public class RaftServer implements RaftMessageHandler {
 		return null;
 	}
 	
-	private void handleExtendedResponse(RaftResponseMessage response, Throwable error){
+	private RaftResponseMessage handleInstallSnapshotRequest(RaftRequestMessage request){
+		if(request.getTerm() == this.state.getTerm() && !this.catchingUp){
+			if(this.role == ServerRole.Candidate){
+				this.becomeFollower();
+			}else if(this.role == ServerRole.Leader){
+				this.logger.error("Receive InstallSnapshotRequest from another leader(%d) with same term, there must be a bug, server exits", request.getSource());
+				System.exit(-1);
+			}else{
+				this.restartElectionTimer();
+			}
+		}
+		
+		RaftResponseMessage response = new RaftResponseMessage();
+		response.setMessageType(RaftMessageType.InstallSnapshotResponse);
+		response.setTerm(this.state.getTerm());
+		response.setSource(this.id);
+		response.setDestination(request.getSource());
+		if(!this.catchingUp && request.getTerm() < this.state.getTerm()){
+			this.logger.info("received an install snapshot request which has lower term than this server, decline the request");
+			response.setAccepted(false);
+			response.setNextIndex(0);
+			return response;
+		}
+		
+		LogEntry logEntries[] = request.getLogEntries();
+		if(logEntries == null || logEntries.length != 1 || logEntries[0].getValueType() != LogValueType.SnapshotSyncRequest){
+			this.logger.warning("Receive an invalid InstallSnapshotRequest due to bad log entries or bad log entry value");
+			response.setNextIndex(0);
+			response.setAccepted(false);
+			return response;
+		}
+		
+		SnapshotSyncRequest snapshotSyncRequest = SnapshotSyncRequest.fromBytes(logEntries[0].getValue());
+		response.setAccepted(this.handleSnapshotSyncRequest(snapshotSyncRequest));
+		response.setNextIndex(snapshotSyncRequest.getOffset() + snapshotSyncRequest.getData().length);
+		return response;
+	}
+	
+	private boolean handleSnapshotSyncRequest(SnapshotSyncRequest snapshotSyncRequest){
+		try{
+			this.stateMachine.saveSnapshotData(snapshotSyncRequest.getSnapshot(), snapshotSyncRequest.getOffset(), snapshotSyncRequest.getData());
+			if(snapshotSyncRequest.isDone()){
+				this.logger.debug("sucessfully receive a snapshot from leader");
+				if(this.logStore.compact(snapshotSyncRequest.getSnapshot().getLastLogIndex())){
+					this.logger.info("successfully compact the log store, will now ask the statemachine to apply the snapshot");
+					if(!this.stateMachine.applySnapshot(snapshotSyncRequest.getSnapshot())){
+						this.logger.error("failed to apply the snapshot after log compacted, to ensure the safety, will shutdown the system");
+						System.exit(-1);
+						return false; //should never be reached
+					}
+					
+					this.reconfigure(snapshotSyncRequest.getSnapshot().getLastConfig());
+					this.context.getServerStateManager().saveClusterConfiguration(this.config);
+					this.state.setCommitIndex(snapshotSyncRequest.getSnapshot().getLastLogIndex());
+					this.context.getServerStateManager().persistState(this.state);
+					this.logger.info("snapshot is successfully applied");
+				}else{
+					this.logger.error("failed to compact the log store after a snapshot is received, will ask the leader to retry");
+					return false;
+				}
+			}
+		}catch(Throwable error){
+			this.logger.error("I/O error %s while saving the snapshot or applying the snapshot, no reason to continue", error.getMessage());
+			System.exit(-1);
+			return false;
+		}
+		
+		return true;
+	}
+	
+	private synchronized void handleExtendedResponse(RaftResponseMessage response, Throwable error){
 		if(error != null){
 			this.handleExtendedResponseError(error);
 			return;
@@ -741,6 +933,36 @@ public class RaftServer implements RaftMessageHandler {
 			
 			this.logger.debug("peer accepted to stepping down, removing this server from cluster");
 			this.removeServerFromCluster(response.getSource());
+		}else if(response.getMessageType() == RaftMessageType.InstallSnapshotResponse){
+			if(this.serverToJoin == null){
+				this.logger.info("no server to join, the response must be very old.");
+				return;
+			}
+			
+			if(!response.isAccepted()){
+				this.logger.info("peer doesn't accept the snapshot installation request");
+				return;
+			}
+			
+			SnapshotSyncContext context = this.serverToJoin.getSnapshotSyncContext();
+			if(context == null){
+				this.logger.error("Bug! SnapshotSyncContext must not be null");
+				System.exit(-1);
+				return;
+			}
+			
+			if(response.getNextIndex() >= context.getSnapshot().getSize()){
+				// snapshot is done
+				this.logger.debug("snapshot has been copied and applied to new server, continue to sync logs after snapshot");
+				this.serverToJoin.setSnapshotInSync(null);
+				this.serverToJoin.setNextLogIndex(context.getSnapshot().getLastLogIndex() + 1);
+				this.serverToJoin.setMatchedIndex(response.getNextIndex() - 1);
+				this.syncLogsToNewComingServer(this.serverToJoin.getNextLogIndex());
+			}else{
+				context.setOffset(response.getNextIndex());
+				this.logger.debug("continue to send snapshot to new server at offset %d", response.getNextIndex());
+				this.syncLogsToNewComingServer(this.serverToJoin.getNextLogIndex());
+			}
 		}else{
 			// No more response message types need to be handled
 			this.logger.error("received an unexpected response message type %s, for safety, stepping down", response.getMessageType());
@@ -940,16 +1162,23 @@ public class RaftServer implements RaftMessageHandler {
 			return;
 		}
 		
-		int sizeToSync = Math.min(gap, this.context.getRaftParameters().getLogSyncBatchSize());
-		byte[] logPack = this.logStore.packLog(startIndex, sizeToSync);
-		RaftRequestMessage request = new RaftRequestMessage();
-		request.setCommitIndex(this.state.getCommitIndex());
-		request.setDestination(this.serverToJoin.getId());
-		request.setSource(this.id);
-		request.setTerm(this.state.getTerm());
-		request.setMessageType(RaftMessageType.SyncLogRequest);
-		request.setLastLogIndex(startIndex - 1);
-		request.setLogEntries(new LogEntry[] { new LogEntry(this.state.getTerm(), logPack, LogValueType.LogPack) });
+		RaftRequestMessage request = null;
+		if(startIndex > 0 && startIndex < this.logStore.getStartIndex()){
+			request = this.createSyncSnapshotRequest(this.serverToJoin, startIndex, this.state.getTerm(), this.state.getCommitIndex());
+			
+		}else{
+			int sizeToSync = Math.min(gap, this.context.getRaftParameters().getLogSyncBatchSize());
+			byte[] logPack = this.logStore.packLog(startIndex, sizeToSync);
+			request = new RaftRequestMessage();
+			request.setCommitIndex(this.state.getCommitIndex());
+			request.setDestination(this.serverToJoin.getId());
+			request.setSource(this.id);
+			request.setTerm(this.state.getTerm());
+			request.setMessageType(RaftMessageType.SyncLogRequest);
+			request.setLastLogIndex(startIndex - 1);
+			request.setLogEntries(new LogEntry[] { new LogEntry(this.state.getTerm(), logPack, LogValueType.LogPack) });
+		}
+		
 		this.serverToJoin.SendRequest(request).whenCompleteAsync((RaftResponseMessage response, Throwable error) -> {
 			this.handleExtendedResponse(response, error);
 		});
@@ -995,12 +1224,14 @@ public class RaftServer implements RaftMessageHandler {
 		this.catchingUp = true;
 		this.role = ServerRole.Follower;
 		this.leader = request.getSource();
+		this.state.setTerm(request.getTerm());
 		this.state.setCommitIndex(0);
 		this.state.setVotedFor(-1);
 		this.context.getServerStateManager().persistState(this.state);
 		this.stopElectionTimer();
 		ClusterConfiguration newConfig = ClusterConfiguration.fromBytes(logEntries[0].getValue());
 		this.reconfigure(newConfig);
+		response.setTerm(this.state.getTerm());
 		response.setAccepted(true);
 		return response;
 	}
@@ -1038,5 +1269,65 @@ public class RaftServer implements RaftMessageHandler {
 		this.logStore.append(new LogEntry(this.state.getTerm(), newConfig.toBytes(), LogValueType.Configuration));
 		this.config = newConfig;
 		this.requestAppendEntries();
+	}
+	
+	private int getSnapshotSyncBlockSize(){
+		int blockSize = this.context.getRaftParameters().getSnapshotBlockSize();
+		return blockSize == 0 ? DEFAULT_SNAPSHOT_SYNC_BLOCK_SIZE : blockSize;
+	}
+	
+	private RaftRequestMessage createSyncSnapshotRequest(PeerServer peer, long lastLogIndex, long term, long commitIndex){
+		synchronized(peer){
+			SnapshotSyncContext context = peer.getSnapshotSyncContext();
+			Snapshot snapshot = context == null ? null : context.getSnapshot();
+			Snapshot lastSnapshot = this.stateMachine.getLastSnapshot();
+			if(snapshot == null || (lastSnapshot != null && lastSnapshot.getLastLogIndex() > snapshot.getLastLogIndex())){
+				snapshot = this.stateMachine.getLastSnapshot();
+				
+				if(snapshot == null || lastLogIndex > snapshot.getLastLogIndex()){
+					this.logger.error("system is running into fatal errors, failed to find a snapshot for peer %d(snapshot null: %s, snapshot doesn't contais lastLogIndex: %s)", peer.getId(), String.valueOf(snapshot == null), String.valueOf(lastLogIndex > snapshot.getLastLogIndex()));
+					System.exit(-1);
+					return null;
+				}
+				
+				if(snapshot.getSize() < 1L){
+					this.logger.error("invalid snapshot, this usually means a bug from state machine implementation, stop the system to prevent further errors");
+					System.exit(-1);
+					return null;
+				}
+				
+				this.logger.info("trying to sync snapshot with last index %d to peer %d", snapshot.getLastLogIndex(), peer.getId());
+				peer.setSnapshotInSync(snapshot);
+			}
+			
+			long offset = peer.getSnapshotSyncContext().getOffset();
+			long sizeLeft = snapshot.getSize() - offset;
+			int blockSize = this.getSnapshotSyncBlockSize();
+			byte[] data = new byte[sizeLeft > blockSize ? blockSize : (int)sizeLeft];
+			try{
+				int sizeRead = this.stateMachine.readSnapshotData(snapshot, offset, data);
+				if(sizeRead < data.length){
+					this.logger.error("only %d bytes could be read from snapshot while %d bytes are expected, should be something wrong" , sizeRead, data.length);
+					System.exit(-1);
+					return null;
+				}
+			}catch(Throwable error){
+				// if there is i/o error, no reason to continue
+				this.logger.error("failed to read snapshot data due to io error %s", error.toString());
+				System.exit(-1);
+				return null;
+			}
+			SnapshotSyncRequest syncRequest = new SnapshotSyncRequest(snapshot, offset, data, (offset + data.length) >= snapshot.getSize());
+			RaftRequestMessage requestMessage = new RaftRequestMessage();
+			requestMessage.setMessageType(RaftMessageType.InstallSnapshotRequest);
+			requestMessage.setSource(this.id);
+			requestMessage.setDestination(peer.getId());
+			requestMessage.setLastLogIndex(snapshot.getLastLogIndex());
+			requestMessage.setLastLogTerm(snapshot.getLastLogTerm());
+			requestMessage.setLogEntries(new LogEntry[] { new LogEntry(term, syncRequest.toBytes(), LogValueType.SnapshotSyncRequest) });
+			requestMessage.setCommitIndex(commitIndex);
+			requestMessage.setTerm(term);
+			return requestMessage;
+		}
 	}
 }

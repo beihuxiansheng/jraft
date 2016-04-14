@@ -32,6 +32,10 @@ public class FileBasedServerStateManagerTests {
 		Files.deleteIfExists(container.resolve("server.state"));
 		Files.deleteIfExists(container.resolve("config.properties"));
 		Files.deleteIfExists(container.resolve("cluster.json"));
+		Files.deleteIfExists(container.resolve("store.sti"));
+		Files.deleteIfExists(container.resolve("store.idx.bak"));
+		Files.deleteIfExists(container.resolve("store.sti.bak"));
+		Files.deleteIfExists(container.resolve("store.data.bak"));
 		int serverId = this.random.nextInt();
 		ClusterConfiguration config = this.randomConfiguration();
 		Properties props = new Properties();
@@ -75,6 +79,10 @@ public class FileBasedServerStateManagerTests {
 		manager.close();
 		Files.deleteIfExists(container.resolve("store.idx"));
 		Files.deleteIfExists(container.resolve("store.data"));
+		Files.deleteIfExists(container.resolve("store.sti"));
+		Files.deleteIfExists(container.resolve("store.idx.bak"));
+		Files.deleteIfExists(container.resolve("store.sti.bak"));
+		Files.deleteIfExists(container.resolve("store.data.bak"));
 		Files.deleteIfExists(container.resolve("server.state"));
 		Files.deleteIfExists(container.resolve("config.properties"));
 		Files.deleteIfExists(container.resolve("cluster.json"));

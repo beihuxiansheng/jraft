@@ -21,6 +21,7 @@ public class PeerServer {
 	private long nextLogIndex;
 	private long matchedIndex;
 	private boolean heartbeatEnabled;
+	private SnapshotSyncContext snapshotSyncContext;
 	
 	public PeerServer(ClusterServer server, RaftContext context, final Consumer<PeerServer> heartbeatConsumer){
 		this.clusterConfig = server;
@@ -31,6 +32,7 @@ public class PeerServer {
 		this.maxHeartbeatInterval = context.getRaftParameters().getMaxHeartbeatInterval();
 		this.rpcBackoffInterval = context.getRaftParameters().getRpcFailureBackoff();
 		this.heartbeatTask = null;
+		this.snapshotSyncContext = null;
 		this.nextLogIndex = 1;
 		this.matchedIndex = 0;
 		this.heartbeatEnabled = false;
@@ -110,6 +112,18 @@ public class PeerServer {
 	
 	public boolean clearPendingCommit(){
 		return this.pendingCommitFlag.compareAndSet(1, 0);
+	}
+	
+	public void setSnapshotInSync(Snapshot snapshot){
+		if(snapshot == null){
+			this.snapshotSyncContext = null;
+		}else{
+			this.snapshotSyncContext = new SnapshotSyncContext(snapshot);
+		}
+	}
+	
+	public SnapshotSyncContext getSnapshotSyncContext(){
+		return this.snapshotSyncContext;
 	}
 
 	public CompletableFuture<RaftResponseMessage> SendRequest(RaftRequestMessage request){

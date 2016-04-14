@@ -8,8 +8,18 @@ public class RaftParameters {
 	private int rpcFailureBackoff;
 	private int logSyncBatchSize;
 	private int logSyncStopGap;
+	private int snapshotDistance;
+	private int snapshotBlockSize;
 	
-	public RaftParameters(int electionTimeoutUpper, int electionTimeoutLower, int heartbeatInterval, int rpcFailureBackoff, int logSyncBatchSize, int logSyncStopGap){
+	public RaftParameters(
+			int electionTimeoutUpper, 
+			int electionTimeoutLower,
+			int heartbeatInterval, 
+			int rpcFailureBackoff,
+			int logSyncBatchSize, 
+			int logSyncStopGap, 
+			int snapshotDistance,
+			int snapshotBlockSize){
 		if(heartbeatInterval >= electionTimeoutLower){
 			throw new IllegalArgumentException("electionTimeoutLower must be greater than heartbeatInterval");
 		}
@@ -19,6 +29,8 @@ public class RaftParameters {
 		this.rpcFailureBackoff = rpcFailureBackoff;
 		this.logSyncBatchSize = logSyncBatchSize;
 		this.logSyncStopGap = logSyncStopGap;
+		this.snapshotDistance = snapshotDistance;
+		this.snapshotBlockSize = snapshotBlockSize;
 	}
 
 	/**
@@ -76,5 +88,21 @@ public class RaftParameters {
 	 */
 	public int getLogSyncStopGap() {
 		return logSyncStopGap;
+	}
+	
+	/**
+	 * The commit distances for snapshots, zero means don't take any snapshots
+	 * @return
+	 */
+	public int getSnapshotDistance(){
+		return this.snapshotDistance;
+	}
+
+	/**
+	 * The block size to sync while syncing snapshots to peers
+	 * @return
+	 */
+	public int getSnapshotBlockSize() {
+		return snapshotBlockSize;
 	}
 }

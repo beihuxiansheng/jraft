@@ -17,8 +17,7 @@ public class ClusterConfiguration {
 		this.lastLogIndex = 0;
 	}
 	
-	public static ClusterConfiguration fromBytes(byte[] bytes){
-		ByteBuffer buffer = ByteBuffer.wrap(bytes);
+	public static ClusterConfiguration fromBytes(ByteBuffer buffer){
 		ClusterConfiguration configuration = new ClusterConfiguration();
 		configuration.setLogIndex(buffer.getLong());
 		configuration.setLastLogIndex(buffer.getLong());
@@ -27,6 +26,10 @@ public class ClusterConfiguration {
 		}
 		
 		return configuration;
+	}
+	
+	public static ClusterConfiguration fromBytes(byte[] data){
+		return fromBytes(ByteBuffer.wrap(data));
 	}
 
 	public long getLogIndex() {

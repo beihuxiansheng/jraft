@@ -53,10 +53,10 @@ public class App
     	}
 
     	URI localEndpoint = new URI(config.getServer(stateManager.getServerId()).getEndpoint());
-    	RaftParameters raftParameters = new RaftParameters(5000, 3000, 1500, 500, 5, 5);
+    	RaftParameters raftParameters = new RaftParameters(5000, 3000, 1500, 500, 5, 5, 5000, 0);
     	RaftContext context = new RaftContext(
     			stateManager,
-    			new MessagePrinter(),
+    			new MessagePrinter(baseDir),
     			raftParameters,
     			new RpcTcpListener(localEndpoint.getPort()),
     			new Log4jLoggerFactory(),

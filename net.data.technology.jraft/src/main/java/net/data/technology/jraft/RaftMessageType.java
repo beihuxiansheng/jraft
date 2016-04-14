@@ -166,6 +166,28 @@ public enum RaftMessageType {
 		public byte toByte(){
 			return (byte)15;
 		}
+	},
+	InstallSnapshotRequest {
+		@Override
+		public String toString(){
+			return "InstallSnapshotRequest";
+		}
+		
+		@Override
+		public byte toByte(){
+			return (byte)16;
+		}
+	},
+	InstallSnapshotResponse {
+		@Override
+		public String toString(){
+			return "InstallSnapshotResponse";
+		}
+		
+		@Override
+		public byte toByte(){
+			return (byte)17;
+		}
 	};
 
 	public abstract byte toByte();
@@ -202,6 +224,10 @@ public enum RaftMessageType {
 			return LeaveClusterRequest;
 		case 15:
 			return LeaveClusterResponse;
+		case 16:
+			return InstallSnapshotRequest;
+		case 17:
+			return InstallSnapshotResponse;
 		}
 
 		throw new IllegalArgumentException("the value for the message type is not defined");

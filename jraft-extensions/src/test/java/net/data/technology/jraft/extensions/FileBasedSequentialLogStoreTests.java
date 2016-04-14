@@ -24,9 +24,17 @@ public class FileBasedSequentialLogStoreTests {
 		Path container = Files.createTempDirectory("logstore");
 		Files.deleteIfExists(container.resolve("store.idx"));
 		Files.deleteIfExists(container.resolve("store.data"));
+		Files.deleteIfExists(container.resolve("store.sti"));
+		Files.deleteIfExists(container.resolve("store.idx.bak"));
+		Files.deleteIfExists(container.resolve("store.sti.bak"));
+		Files.deleteIfExists(container.resolve("store.data.bak"));
 		Path container1 = Files.createTempDirectory("logstore");
 		Files.deleteIfExists(container1.resolve("store.idx"));
 		Files.deleteIfExists(container1.resolve("store.data"));
+		Files.deleteIfExists(container1.resolve("store.sti"));
+		Files.deleteIfExists(container1.resolve("store.idx.bak"));
+		Files.deleteIfExists(container1.resolve("store.sti.bak"));
+		Files.deleteIfExists(container1.resolve("store.data.bak"));
 		FileBasedSequentialLogStore store = new FileBasedSequentialLogStore(container.toString());
 		FileBasedSequentialLogStore store1 = new FileBasedSequentialLogStore(container1.toString());
 		int logsCount = this.random.nextInt(1000) + 1000;
@@ -54,9 +62,17 @@ public class FileBasedSequentialLogStoreTests {
 
 		Files.deleteIfExists(container.resolve("store.idx"));
 		Files.deleteIfExists(container.resolve("store.data"));
+		Files.deleteIfExists(container.resolve("store.sti"));
+		Files.deleteIfExists(container.resolve("store.idx.bak"));
+		Files.deleteIfExists(container.resolve("store.sti.bak"));
+		Files.deleteIfExists(container.resolve("store.data.bak"));
 		Files.deleteIfExists(container);
 		Files.deleteIfExists(container1.resolve("store.idx"));
 		Files.deleteIfExists(container1.resolve("store.data"));
+		Files.deleteIfExists(container1.resolve("store.sti"));
+		Files.deleteIfExists(container1.resolve("store.idx.bak"));
+		Files.deleteIfExists(container1.resolve("store.sti.bak"));
+		Files.deleteIfExists(container1.resolve("store.data.bak"));
 		Files.deleteIfExists(container1);
 	}
 	
@@ -65,6 +81,10 @@ public class FileBasedSequentialLogStoreTests {
 		Path container = Files.createTempDirectory("logstore");
 		Files.deleteIfExists(container.resolve("store.idx"));
 		Files.deleteIfExists(container.resolve("store.data"));
+		Files.deleteIfExists(container.resolve("store.sti"));
+		Files.deleteIfExists(container.resolve("store.idx.bak"));
+		Files.deleteIfExists(container.resolve("store.sti.bak"));
+		Files.deleteIfExists(container.resolve("store.data.bak"));
 		FileBasedSequentialLogStore store = new FileBasedSequentialLogStore(container.toString());
 		assertTrue(store.getLastLogEntry().getTerm() == 0);
 		assertTrue(store.getLastLogEntry().getValue() == null);
@@ -122,14 +142,132 @@ public class FileBasedSequentialLogStoreTests {
 		// test write at
 		LogEntry logEntry = this.randomLogEntry();
 		randomIndex = this.random.nextInt((int)store.getFirstAvailableIndex());
-		store.writeAt(randomIndex, logEntry);
-		assertEquals(randomIndex + 1, store.getFirstAvailableIndex());
+		store.writeAt(store.getStartIndex() + randomIndex, logEntry);
+		assertEquals(randomIndex + 1 + store.getStartIndex(), store.getFirstAvailableIndex());
 		assertTrue(logEntriesEquals(logEntry, store.getLastLogEntry()));
 		
 		store.close();
 		Files.deleteIfExists(container.resolve("store.idx"));
 		Files.deleteIfExists(container.resolve("store.data"));
+		Files.deleteIfExists(container.resolve("store.sti"));
+		Files.deleteIfExists(container.resolve("store.idx.bak"));
+		Files.deleteIfExists(container.resolve("store.sti.bak"));
+		Files.deleteIfExists(container.resolve("store.data.bak"));
 		Files.deleteIfExists(container);
+	}
+	
+	@Test
+	public void testCompactRandom() throws Exception{
+		Path container = Files.createTempDirectory("logstore");
+		Files.deleteIfExists(container.resolve("store.idx"));
+		Files.deleteIfExists(container.resolve("store.data"));
+		Files.deleteIfExists(container.resolve("store.sti"));
+		Files.deleteIfExists(container.resolve("store.idx.bak"));
+		Files.deleteIfExists(container.resolve("store.sti.bak"));
+		Files.deleteIfExists(container.resolve("store.data.bak"));
+		FileBasedSequentialLogStore store = new FileBasedSequentialLogStore(container.toString());
+		
+		// write some logs
+		List<LogEntry> entries = new LinkedList<LogEntry>();
+		for(int i = 0; i < 300; ++i){
+			LogEntry entry = this.randomLogEntry();
+			entries.add(entry);
+			store.append(entry);
+		}
+
+		long lastLogIndex = entries.size();
+		long indexToCompact = this.random.nextInt((int)lastLogIndex - 10) + 1;
+		store.compact(indexToCompact);
+		
+		assertEquals(indexToCompact + 1, store.getStartIndex());
+		assertEquals(entries.size(), store.getFirstAvailableIndex() - 1);
+		
+		for(int i = 0; i < store.getFirstAvailableIndex() - indexToCompact - 1; ++i){
+			LogEntry entry = store.getLogEntryAt(store.getStartIndex() + i);
+			assertTrue(logEntriesEquals(entries.get(i + (int)indexToCompact), entry));
+		}
+		
+		int randomIndex = this.random.nextInt((int)(store.getFirstAvailableIndex() - indexToCompact - 1));
+		LogEntry logEntry = this.randomLogEntry();
+		store.writeAt(store.getStartIndex() + randomIndex, logEntry);
+		entries.set(randomIndex + (int)indexToCompact, logEntry);
+		while(entries.size() > randomIndex + (int)indexToCompact + 1){
+			entries.remove(randomIndex + (int)indexToCompact + 1);
+		}
+		
+		for(int i = 0; i < store.getFirstAvailableIndex() - indexToCompact - 1; ++i){
+			LogEntry entry = store.getLogEntryAt(store.getStartIndex() + i);
+			assertTrue(logEntriesEquals(entries.get(i + (int)indexToCompact), entry));
+		}
+		
+		for(int i = 0; i < this.random.nextInt(100) + 10; ++i){
+			LogEntry entry = this.randomLogEntry();
+			entries.add(entry);
+			store.append(entry);
+		}
+		
+		for(int i = 0; i < store.getFirstAvailableIndex() - indexToCompact - 1; ++i){
+			LogEntry entry = store.getLogEntryAt(store.getStartIndex() + i);
+			assertTrue(logEntriesEquals(entries.get(i + (int)indexToCompact), entry));
+		}
+		
+		store.close();
+		Files.deleteIfExists(container.resolve("store.idx"));
+		Files.deleteIfExists(container.resolve("store.data"));
+		Files.deleteIfExists(container.resolve("store.sti"));
+		Files.deleteIfExists(container.resolve("store.idx.bak"));
+		Files.deleteIfExists(container.resolve("store.sti.bak"));
+		Files.deleteIfExists(container.resolve("store.data.bak"));
+	}
+	
+	@Test
+	public void testCompactAll() throws Exception{
+		Path container = Files.createTempDirectory("logstore");
+		Files.deleteIfExists(container.resolve("store.idx"));
+		Files.deleteIfExists(container.resolve("store.data"));
+		Files.deleteIfExists(container.resolve("store.sti"));
+		Files.deleteIfExists(container.resolve("store.idx.bak"));
+		Files.deleteIfExists(container.resolve("store.sti.bak"));
+		Files.deleteIfExists(container.resolve("store.data.bak"));
+		FileBasedSequentialLogStore store = new FileBasedSequentialLogStore(container.toString());
+		
+		// write some logs
+		List<LogEntry> entries = new LinkedList<LogEntry>();
+		for(int i = 0; i < this.random.nextInt(1000) + 100; ++i){
+			LogEntry entry = this.randomLogEntry();
+			entries.add(entry);
+			store.append(entry);
+		}
+
+		assertEquals(1, store.getStartIndex());
+		assertEquals(entries.size(), store.getFirstAvailableIndex() - 1);
+		assertTrue(logEntriesEquals(entries.get(entries.size() - 1), store.getLastLogEntry()));
+		long lastLogIndex = entries.size();
+		store.compact(lastLogIndex);
+		
+		assertEquals(entries.size() + 1, store.getStartIndex());
+		assertEquals(entries.size(), store.getFirstAvailableIndex() - 1);
+		
+		for(int i = 0; i < this.random.nextInt(100) + 10; ++i){
+			LogEntry entry = this.randomLogEntry();
+			entries.add(entry);
+			store.append(entry);
+		}
+		
+		assertEquals(lastLogIndex + 1, store.getStartIndex());
+		assertEquals(entries.size(), store.getFirstAvailableIndex() - 1);
+		assertTrue(logEntriesEquals(entries.get(entries.size() - 1), store.getLastLogEntry()));
+		
+		long index = store.getStartIndex() + this.random.nextInt((int)(store.getFirstAvailableIndex() - store.getStartIndex()));
+		assertTrue(logEntriesEquals(entries.get((int)index - 1), store.getLogEntryAt(index)));
+		
+		store.close();
+		Files.deleteIfExists(container.resolve("store.idx"));
+		Files.deleteIfExists(container.resolve("store.data"));
+		Files.deleteIfExists(container.resolve("store.sti"));
+		Files.deleteIfExists(container.resolve("store.idx.bak"));
+		Files.deleteIfExists(container.resolve("store.sti.bak"));
+		Files.deleteIfExists(container.resolve("store.data.bak"));
 	}
 	
 	private LogEntry randomLogEntry(){

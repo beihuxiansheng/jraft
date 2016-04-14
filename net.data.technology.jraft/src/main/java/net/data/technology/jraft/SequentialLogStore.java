@@ -9,6 +9,13 @@ public interface SequentialLogStore {
 	public long getFirstAvailableIndex();
 	
 	/**
+	 * The start index of the log store, at the very beginning, it must be 1
+	 * however, after some compact actions, this could be anything greater or equals to one
+	 * @return
+	 */
+	public long getStartIndex();
+	
+	/**
 	 * The last log entry in store
 	 * @return a dummy constant entry with value set to null and term set to zero if no log entry in store
 	 */
@@ -56,4 +63,11 @@ public interface SequentialLogStore {
 	 * @param logPack
 	 */
 	public void applyLogPack(long index, byte[] logPack);
+	
+	/**
+	 * Compact the log store by removing all log entries including the log at the lastLogIndex
+	 * @param lastLogIndex
+	 * @return compact successfully or not
+	 */
+	public boolean compact(long lastLogIndex);
 }

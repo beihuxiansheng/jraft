@@ -25,6 +25,12 @@ public enum LogValueType {
 		public byte toByte(){
 			return 4;
 		}
+	},
+	SnapshotSyncRequest {
+		@Override
+		public byte toByte(){
+			return 5;
+		}
 	};
 	
 	public abstract byte toByte();
@@ -39,6 +45,8 @@ public enum LogValueType {
 			return ClusterServer;
 		case 4:
 			return LogPack;
+		case 5:
+			return SnapshotSyncRequest;
 		default:
 			throw new IllegalArgumentException(String.format("%d is not defined for LogValueType", b));
 		}
