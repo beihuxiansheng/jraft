@@ -8,7 +8,7 @@ The core algorithm is implemented based on the TLA+ spec, whose safety and liven
 - [x] Configuration Change Support, add or remove servers one by one without limitation
 - [x] Client Request Support, to be enhanced, but is working now.
 - [x] **Urgent commit**, see below
-- [ ] log compact 
+- [x] log compaction 
 
 > Urgent Commit, is a new feature introduced by this implementation, which enables the leader asks all other servers to commit one or more logs if commit index is advanced
 
