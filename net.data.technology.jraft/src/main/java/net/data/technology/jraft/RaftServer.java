@@ -651,7 +651,7 @@ public class RaftServer implements RaftMessageHandler {
 								System.exit(-1);
 							}
 							
-							long indexToCompact = indexToCommit >= this.logStore.getFirstAvailableIndex() - 1 ? indexToCommit - 1 : indexToCommit;
+							long indexToCompact = indexToCommit - 1;
 							long logTermToCompact = this.logStore.getLogEntryAt(indexToCompact).getTerm();
 							Snapshot snapshot = new Snapshot(indexToCompact, logTermToCompact, config);
 							this.stateMachine.createSnapshot(snapshot).whenCompleteAsync((Boolean result, Throwable error) -> {
