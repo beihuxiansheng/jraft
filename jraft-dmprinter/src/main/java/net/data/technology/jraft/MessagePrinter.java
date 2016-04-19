@@ -32,10 +32,12 @@ public class MessagePrinter implements StateMachine {
 	public MessagePrinter(Path baseDir){
 		this.snapshotStore = baseDir.resolve("snapshots");
 		this.commitIndex = 0;
-		try{
-			Files.createDirectory(this.snapshotStore);
-		}catch(Exception error){
-			throw new IllegalArgumentException("bad baseDir");
+		if(!Files.isDirectory(this.snapshotStore)){
+			try{
+				Files.createDirectory(this.snapshotStore);
+			}catch(Exception error){
+				throw new IllegalArgumentException("bad baseDir");
+			}
 		}
 	}
 	

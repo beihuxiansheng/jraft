@@ -57,6 +57,7 @@ public class FileBasedSequentialLogStore implements SequentialLogStore {
 			
 			this.entriesInStore = this.indexFile.length() / Long.BYTES;
 			this.loadLastEntry();
+			this.logger.debug(String.format("log store started with entriesInStore=%d, startIndex=%d", this.entriesInStore, this.startIndex));
 		}catch(IOException exception){
 			this.logger.error("failed to access log store", exception);
 		}

@@ -601,6 +601,7 @@ public class RaftServer implements RaftMessageHandler {
 	
 	private void commit(long targetIndex){
 		if(targetIndex > this.state.getCommitIndex()){
+			boolean snapshotInAction = false;
 			try{
 				while(this.state.getCommitIndex() < targetIndex && this.state.getCommitIndex() < this.logStore.getFirstAvailableIndex() - 1){
 					long indexToCommit = this.state.getCommitIndex() + 1;
@@ -619,12 +620,14 @@ public class RaftServer implements RaftMessageHandler {
 					
 					// see if we need to do snapshots
 					if(this.context.getRaftParameters().getSnapshotDistance() > 0 
-						&& (indexToCommit - this.logStore.getStartIndex() > this.context.getRaftParameters().getSnapshotDistance())
+						&& ((indexToCommit - this.logStore.getStartIndex()) > this.context.getRaftParameters().getSnapshotDistance())
 						&& this.snapshotInProgress.compareAndSet(0, 1)){
-						
+						snapshotInAction = true;
 						Snapshot currentSnapshot = this.stateMachine.getLastSnapshot();
 						if(currentSnapshot != null && indexToCommit - currentSnapshot.getLastLogIndex() < this.context.getRaftParameters().getSnapshotDistance()){
 							this.logger.info("a very recent snapshot is available at index %d, will skip this one", currentSnapshot.getLastLogIndex());
+							this.snapshotInProgress.set(0);
+							snapshotInAction = false;
 						}else{
 							this.logger.info("creating a snapshot for index %d", indexToCommit);
 							
@@ -648,33 +651,42 @@ public class RaftServer implements RaftMessageHandler {
 								System.exit(-1);
 							}
 							
-							Snapshot snapshot = new Snapshot(indexToCommit, logEntry.getTerm(), config);
+							long indexToCompact = indexToCommit >= this.logStore.getFirstAvailableIndex() - 1 ? indexToCommit - 1 : indexToCommit;
+							long logTermToCompact = this.logStore.getLogEntryAt(indexToCompact).getTerm();
+							Snapshot snapshot = new Snapshot(indexToCompact, logTermToCompact, config);
 							this.stateMachine.createSnapshot(snapshot).whenCompleteAsync((Boolean result, Throwable error) -> {
-								this.snapshotInProgress.set(0);
-								if(error != null){
-									this.logger.error("failed to create a snapshot due to %s", error.getMessage());
-									return;
-								}
-								
-								if(!result.booleanValue()){
-									this.logger.info("the state machine rejects to create the snapshot");
-									return;
-								}
-								
-								synchronized(this){
-									this.logger.debug("snapshot created, compact the log store");
-									try{
-										this.logStore.compact(snapshot.getLastLogIndex());
-									}catch(Throwable ex){
-										this.logger.error("failed to compact the log store, no worries, the system still in a good shape", ex);
+								try{
+									if(error != null){
+										this.logger.error("failed to create a snapshot due to %s", error.getMessage());
+										return;
 									}
+									
+									if(!result.booleanValue()){
+										this.logger.info("the state machine rejects to create the snapshot");
+										return;
+									}
+									
+									synchronized(this){
+										this.logger.debug("snapshot created, compact the log store");
+										try{
+											this.logStore.compact(snapshot.getLastLogIndex());
+										}catch(Throwable ex){
+											this.logger.error("failed to compact the log store, no worries, the system still in a good shape", ex);
+										}
+									}
+								}finally{
+									this.snapshotInProgress.set(0);
 								}
 							});
+							snapshotInAction = false;
 						}
 					}
 				}
 			}catch(Throwable error){
 				this.logger.error("failed to commit to index %d, due to errors %s", targetIndex, error.toString());
+				if(snapshotInAction){
+					this.snapshotInProgress.compareAndSet(1, 0);
+				}
 			}
 			
 			// save the commitment state
