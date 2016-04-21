@@ -70,7 +70,7 @@ public class RaftParameters {
 	 * @return
 	 */
 	public int getMaxHeartbeatInterval(){
-		return Math.max(this.heartbeatInterval, this.electionTimeoutLowerBound / 2 + this.heartbeatInterval / 2);
+		return Math.max(this.heartbeatInterval, this.electionTimeoutLowerBound - this.heartbeatInterval / 2);
 	}
 
 	/**
