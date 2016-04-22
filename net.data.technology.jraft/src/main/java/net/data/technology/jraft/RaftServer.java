@@ -83,7 +83,7 @@ public class RaftServer implements RaftMessageHandler {
 		}
 
 		// try to load uncommitted, no need to check snapshots
-		for(long i = this.state.getCommitIndex() + 1; i < this.logStore.getFirstAvailableIndex(); ++i){
+		for(long i = Math.max(this.state.getCommitIndex() + 1, this.logStore.getStartIndex()); i < this.logStore.getFirstAvailableIndex(); ++i){
 			LogEntry logEntry = this.logStore.getLogEntryAt(i);
 			if(logEntry.getValueType() == LogValueType.Configuration){
 				this.config = ClusterConfiguration.fromBytes(logEntry.getValue());
