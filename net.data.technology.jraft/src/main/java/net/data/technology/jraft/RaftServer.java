@@ -279,11 +279,14 @@ public class RaftServer implements RaftMessageHandler {
 		if(this.catchingUp){
 			// this is a new server for the cluster, will not send out vote request until the config that includes this server is committed
 			this.logger.info("election timeout while joining the cluster, ignore it.");
+			this.restartElectionTimer();
+			return;
 		}
 		
 		if(this.role == ServerRole.Leader){
 			this.logger.error("A leader should never encounter election timeout, illegal application state, stop the application");
 			System.exit(-1);
+			return;
 		}
 		
 		this.logger.debug("Election timeout, change to Candidate");
