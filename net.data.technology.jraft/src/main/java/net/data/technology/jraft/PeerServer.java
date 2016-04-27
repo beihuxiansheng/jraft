@@ -127,7 +127,7 @@ public class PeerServer {
 	}
 
 	public CompletableFuture<RaftResponseMessage> SendRequest(RaftRequestMessage request){
-		boolean isAppendRequest = request.getMessageType() == RaftMessageType.AppendEntriesRequest;
+		boolean isAppendRequest = request.getMessageType() == RaftMessageType.AppendEntriesRequest || request.getMessageType() == RaftMessageType.InstallSnapshotRequest;
 		return this.rpcClient.send(request)
 				.thenComposeAsync((RaftResponseMessage response) -> {
 					this.resumeHeartbeatingSpeed();
