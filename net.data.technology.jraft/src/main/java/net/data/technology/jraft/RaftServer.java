@@ -778,15 +778,7 @@ public class RaftServer implements RaftMessageHandler {
 		}
 		
 		for(Integer id : this.peers.keySet()){
-			boolean removed = true;
-			for(ClusterServer s : newConfig.getServers()){
-				if(s.getId() == id.intValue()){
-					removed = false;
-					break;
-				}
-			}
-			
-			if(removed){
+			if(newConfig.getServer(id.intValue()) == null){
 				serversRemoved.add(id);
 			}
 		}
@@ -805,13 +797,17 @@ public class RaftServer implements RaftMessageHandler {
 		
 		for(Integer id : serversRemoved){
 			PeerServer peer = this.peers.get(id);
-			if(peer.getHeartbeatTask() != null){
-				peer.getHeartbeatTask().cancel(false);
+			if(peer == null){
+				this.logger.info("peer %d cannot be found in current peer list", id);
+			} else{
+				if(peer.getHeartbeatTask() != null){
+					peer.getHeartbeatTask().cancel(false);
+				}
+	
+				peer.enableHeartbeat(false);
+				this.peers.remove(id);
+				this.logger.info("server %d is removed from cluster", id.intValue());
 			}
-
-			peer.enableHeartbeat(false);
-			this.peers.remove(id);
-			this.logger.info("server %d is removed from cluster", id.intValue());
 		}
 		
 		this.config = newConfig;
@@ -872,7 +868,7 @@ public class RaftServer implements RaftMessageHandler {
 		
 		SnapshotSyncRequest snapshotSyncRequest = SnapshotSyncRequest.fromBytes(logEntries[0].getValue());
 		response.setAccepted(this.handleSnapshotSyncRequest(snapshotSyncRequest));
-		response.setNextIndex(snapshotSyncRequest.getOffset() + snapshotSyncRequest.getData().length);
+		response.setNextIndex(snapshotSyncRequest.getOffset() + snapshotSyncRequest.getData().length); // the next index will be ignored if "accept" is false
 		return response;
 	}
 	
@@ -927,7 +923,7 @@ public class RaftServer implements RaftMessageHandler {
 				this.serverToJoin.resumeHeartbeatingSpeed();
 				this.serverToJoin.setNextLogIndex(response.getNextIndex());
 				this.serverToJoin.setMatchedIndex(response.getNextIndex() - 1);
-				this.syncLogsToNewComingServer(response.getNextIndex()); // sync from the very first log entry
+				this.syncLogsToNewComingServer(response.getNextIndex());
 			}
 		}else if(response.getMessageType() == RaftMessageType.JoinClusterResponse){
 			if(this.serverToJoin != null){
@@ -971,13 +967,13 @@ public class RaftServer implements RaftMessageHandler {
 				this.logger.debug("snapshot has been copied and applied to new server, continue to sync logs after snapshot");
 				this.serverToJoin.setSnapshotInSync(null);
 				this.serverToJoin.setNextLogIndex(context.getSnapshot().getLastLogIndex() + 1);
-				this.serverToJoin.setMatchedIndex(response.getNextIndex() - 1);
-				this.syncLogsToNewComingServer(this.serverToJoin.getNextLogIndex());
+				this.serverToJoin.setMatchedIndex(context.getSnapshot().getLastLogIndex());
 			}else{
 				context.setOffset(response.getNextIndex());
 				this.logger.debug("continue to send snapshot to new server at offset %d", response.getNextIndex());
-				this.syncLogsToNewComingServer(this.serverToJoin.getNextLogIndex());
 			}
+
+			this.syncLogsToNewComingServer(this.serverToJoin.getNextLogIndex());
 		}else{
 			// No more response message types need to be handled
 			this.logger.error("received an unexpected response message type %s, for safety, stepping down", response.getMessageType());
@@ -1000,7 +996,7 @@ public class RaftServer implements RaftMessageHandler {
 			if(request.getMessageType() == RaftMessageType.SyncLogRequest || request.getMessageType() == RaftMessageType.JoinClusterRequest || request.getMessageType() == RaftMessageType.LeaveClusterRequest){
 				final PeerServer server = (request.getMessageType() == RaftMessageType.LeaveClusterRequest) ? this.peers.get(request.getDestination()) : this.serverToJoin;
 				if(server != null){
-					if(server.getCurrentHeartbeatInterval() >= this.context.getRaftParameters().getMaxHeartbeatInterval()){
+					if(server.getCurrentHeartbeatInterval() > this.context.getRaftParameters().getMaxHeartbeatInterval()){
 						if(request.getMessageType() == RaftMessageType.LeaveClusterRequest){
 							this.logger.info("rpc failed again for the removing server (%d), will remove this server directly", server.getId());
 							this.removeServerFromCluster(server.getId());
