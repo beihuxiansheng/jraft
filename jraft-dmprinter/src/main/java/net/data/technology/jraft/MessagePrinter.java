@@ -213,4 +213,14 @@ public class MessagePrinter implements StateMachine {
 			return -1;
 		}
 	}
+
+	@Override
+	public void rollback(long logIndex, byte[] data) {
+		System.out.println(String.format("Rollback index %d", logIndex));
+	}
+
+	@Override
+	public void preCommit(long logIndex, byte[] data) {
+		System.out.println(String.format("PreCommit:%s at %d", new String(data, StandardCharsets.UTF_8), logIndex));
+	}
 }

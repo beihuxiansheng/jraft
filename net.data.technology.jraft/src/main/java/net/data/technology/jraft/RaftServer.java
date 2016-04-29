@@ -196,6 +196,12 @@ public class RaftServer implements RaftMessageHandler {
 					ClusterConfiguration newConfig = this.context.getServerStateManager().loadClusterConfiguration();
 					this.reconfigure(newConfig);
 				}
+				
+				LogEntry oldEntry = this.logStore.getLogEntryAt(index);
+				if(oldEntry.getValueType() == LogValueType.Application){
+					this.stateMachine.rollback(index, oldEntry.getValue());
+				}
+				
 				this.logStore.writeAt(index ++, logEntries[logIndex ++]);
 			}
 			
@@ -206,6 +212,8 @@ public class RaftServer implements RaftMessageHandler {
 				if(logEntry.getValueType() == LogValueType.Configuration){
 					ClusterConfiguration newConfig = ClusterConfiguration.fromBytes(logEntry.getValue());
 					this.reconfigure(newConfig);
+				}else{
+					this.stateMachine.preCommit(this.logStore.getFirstAvailableIndex() - 1, logEntry.getValue());
 				}
 			}
 		}
@@ -253,6 +261,7 @@ public class RaftServer implements RaftMessageHandler {
 		if(logEntries != null && logEntries.length > 0){
 			for(int i = 0; i < logEntries.length; ++i){
 				this.logStore.append(new LogEntry(this.state.getTerm(), logEntries[i].getValue()));
+				this.stateMachine.preCommit(this.logStore.getFirstAvailableIndex() - 1, logEntries[i].getValue());
 			}
 		}
 		
