@@ -16,6 +16,8 @@ The core algorithm is implemented based on the TLA+ spec, whose safety and liven
 it's always safer to implement such kind of algorithm based on Math description other than natural languge description.
 there should be an auto conversion from TLA+ to programming languages, even they are talking things in different ways, but they are identical
 
+> In the example of dmprinter (Distributed Message Printer), it takes about 4ms to commit a message, while in Active-Active scenario (sending messages to all three instances of dmprinter), it takes about 9ms to commit a message, the data is collected by CLT (Central Limitation Theory) with 95% of confidence level.
+
 ## Code Structure
 I know it's lack of documentations, I will try my best, but if you can help, let me know.
 * **net.data.technology.jraft**, the core algorithm implementation, you can go only with this, however, you need to implement the following interfaces,
