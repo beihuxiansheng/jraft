@@ -255,6 +255,17 @@ public class MessagePrinter implements StateMachine {
 
 	@Override
 	public void rollback(long logIndex, byte[] data) {
+		String message = new String(data, StandardCharsets.UTF_8);
+		int index = message.indexOf(':');
+		if(index > 0){
+			String key = message.substring(0, index);
+			this.pendingMessages.remove(key);
+			CompletableFuture<String> future = this.uncommittedRequests.get(key);
+			if(future != null){
+				future.complete("Rolled back.");
+			}
+		}
+		
 		System.out.println(String.format("Rollback index %d", logIndex));
 	}
 
@@ -320,7 +331,7 @@ public class MessagePrinter implements StateMachine {
 							return;
 						}
 						
-						System.out.printf("%d bytes in body", bodySize);
+						System.out.printf("%d bytes in body\n", bodySize);
 						ByteBuffer bodyBuffer = ByteBuffer.allocate(bodySize);
 						readBody(connection, bodyBuffer);
 					}catch(Throwable runtimeError){
@@ -365,11 +376,13 @@ public class MessagePrinter implements StateMachine {
 		System.out.println("Got message " + message);
 		int index = message.indexOf(':');
 		if(index <= 0){
+			System.out.println("Bad message, No key");
 			future.complete("Bad message, No key");
 		}
 		
 		String key = message.substring(0, index);
 		if(this.messages.containsKey(key)){
+			System.out.println("Already printed.");
 			future.complete("Already printed.");
 			this.uncommittedRequests.remove(key);
 			return;
@@ -377,17 +390,23 @@ public class MessagePrinter implements StateMachine {
 		
 		if(this.pendingMessages.containsKey(key)){
 			//BUG should be able to do chained completion with existing future related to that key
+			System.out.println("Already in processing");
 			this.uncommittedRequests.put(key, future);
 			return;
 		}
-		
+
+		uncommittedRequests.put(key, future);
 		messageSender.appendEntries(new byte[][] { message.getBytes(StandardCharsets.UTF_8) }).whenCompleteAsync((Boolean result, Throwable err) -> {
 			if(err != null){
+				System.out.println("System faulted, please retry");
 				future.complete("System faulted, please retry");
+				this.uncommittedRequests.remove(key);
 			}else if(!result){
+				System.out.println("System is not ready");
 				future.complete("System is not ready");
+				this.uncommittedRequests.remove(key);
 			}else{
-				uncommittedRequests.put(key, future);
+				System.out.println("Message is sent to leader.");
 			}
 		});
 	}
@@ -402,12 +421,14 @@ public class MessagePrinter implements StateMachine {
 		this.messages.put(key, message);
 		CompletableFuture<String> req = this.uncommittedRequests.get(key);
 		if(req != null){
+			System.out.println("Complete the future with 'Printed'");
 			req.complete("Printed.");
 			this.uncommittedRequests.remove(key);
 		}
 	}
 	
 	private void sendResponse(AsynchronousSocketChannel connection, String message){
+		System.out.println("Response: " + message);
 		byte[] resp = message.getBytes(StandardCharsets.UTF_8);
 		int respSize = resp.length;
 		ByteBuffer respBuffer = ByteBuffer.allocate(respSize + 4);
@@ -417,12 +438,15 @@ public class MessagePrinter implements StateMachine {
 		}
 		
 		respBuffer.put(resp);
+		respBuffer.flip();
 		try{
 			AsyncUtility.writeToChannel(connection, respBuffer, null, handlerFrom((Integer bytesWrite, Object ctx) -> {
 				if(bytesWrite < respBuffer.limit()){
+					System.out.println("only partial of the data is sent");
 					logger.info("failed to write all data back to response channel");
 					closeSocket(connection);
 				}else{
+					System.out.println("Response sent, wait for more request.");
 					readRequest(connection);
 				}
 			}, connection));

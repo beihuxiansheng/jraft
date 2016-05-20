@@ -1424,7 +1424,7 @@ public class RaftServer implements RaftMessageHandler {
 			CompletableFuture<Boolean> result = new CompletableFuture<Boolean>();
 			RpcClient rpcClient = this.rpcClients.get(leaderId);
 			if(rpcClient == null){
-				ClusterServer leader = config.getServer(this.server.id);
+				ClusterServer leader = config.getServer(leaderId);
 				if(leader == null){
 					result.complete(false);
 					return result;
@@ -1442,6 +1442,7 @@ public class RaftServer implements RaftMessageHandler {
 					result.complete(response.isAccepted());
 				}
 			});
+			
 			return result;
 		}
 	}
