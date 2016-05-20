@@ -28,3 +28,10 @@ I know it's lack of documentations, I will try my best, but if you can help, let
   5. **StateMachine**
 * **jraft-extensions**, some implementations for the interfaces mentioned above, it provides TCP based CompletableFuture<T> enabled RPC client and server as well as **FileBasedSequentialLogStore**, with this, you will be able to implement your own system by only implement **StateMachine** interface
 * **jraft-dmprinter**, a sample application, as it's name, it's distributed message printer, for sample and testing.
+
+## Planning
+Here is the list of features planned for this project, 
+- [ ] Implement Http Based **RpcListener** and **RpcClient** plus **RpcClientFactory**
+- [ ] Implement MappedFileBasedSequentialLogStore for **SequentialLogStore** to improve the overall system performance
+- [ ] Implement a InProc based Distributed Cache Library for Http based Applications
+- [ ] Implement a distributed database system by leveraging existing Java based Database system
