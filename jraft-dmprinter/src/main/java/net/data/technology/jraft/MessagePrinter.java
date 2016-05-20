@@ -8,6 +8,13 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.RandomAccessFile;
+import java.net.InetSocketAddress;
+import java.net.StandardSocketOptions;
+import java.nio.ByteBuffer;
+import java.nio.channels.AsynchronousChannelGroup;
+import java.nio.channels.AsynchronousServerSocketChannel;
+import java.nio.channels.AsynchronousSocketChannel;
+import java.nio.channels.CompletionHandler;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -15,21 +22,37 @@ import java.nio.file.StandardOpenOption;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.function.BiConsumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import org.apache.log4j.LogManager;
 
+import net.data.technology.jraft.extensions.AsyncUtility;
+
 public class MessagePrinter implements StateMachine {
 
 	private Path snapshotStore;
 	private long commitIndex;
-	private List<String> messages = new LinkedList<String>();
+	private Map<String, String> messages = new ConcurrentHashMap<String, String>();
+	private Map<String, String> pendingMessages = new ConcurrentHashMap<String, String>();
 	private boolean snapshotInprogress = false;
+	private int port;
+	private org.apache.log4j.Logger logger;
+	private AsynchronousServerSocketChannel listener;
+	private ExecutorService executorService;
+	private RaftMessageSender messageSender;
+	private Map<String, CompletableFuture<String>> uncommittedRequests = new ConcurrentHashMap<String, CompletableFuture<String>>();
 	
-	public MessagePrinter(Path baseDir){
+	public MessagePrinter(Path baseDir, int listeningPort){
+		this.port = listeningPort;
+		this.logger = LogManager.getLogger(getClass());
 		this.snapshotStore = baseDir.resolve("snapshots");
 		this.commitIndex = 0;
 		if(!Files.isDirectory(this.snapshotStore)){
@@ -41,14 +64,44 @@ public class MessagePrinter implements StateMachine {
 		}
 	}
 	
+	public void run(RaftMessageSender messageSender){
+		this.messageSender = messageSender;
+		int processors = Runtime.getRuntime().availableProcessors();
+		executorService = Executors.newFixedThreadPool(processors);
+		try{
+			AsynchronousChannelGroup channelGroup = AsynchronousChannelGroup.withThreadPool(executorService);
+			this.listener = AsynchronousServerSocketChannel.open(channelGroup);
+			this.listener.setOption(StandardSocketOptions.SO_REUSEADDR, true);
+			this.listener.bind(new InetSocketAddress(this.port));
+			this.acceptRequests();
+		}catch(IOException exception){
+			logger.error("failed to start the listener due to io error", exception);
+		}
+	}
+	
+	public void stop(){
+		if(this.listener != null){
+			try {
+				this.listener.close();
+			} catch (IOException e) {
+				logger.info("failed to close the listener socket", e);
+			}
+			
+			this.listener = null;
+		}
+		
+		if(this.executorService != null){
+			this.executorService.shutdown();
+			this.executorService = null;
+		}
+	}
+	
 	@Override
 	public void commit(long logIndex, byte[] data) {
 		String message = new String(data, StandardCharsets.UTF_8);
 		System.out.printf("commit: %d\t%s\n", logIndex, message);
-		synchronized(this.messages){
-			this.commitIndex = logIndex;
-			this.messages.add(message);
-		}
+		this.commitIndex = logIndex;
+		this.addMessage(message);
 	}
 
 	@Override
@@ -85,7 +138,7 @@ public class MessagePrinter implements StateMachine {
 				while((line = bufferReader.readLine()) != null){
 					if(line.length() > 0){
 						System.out.printf("from snapshot: %s\n", line);
-						this.messages.add(line);
+						this.addMessage(line);
 					}
 				}
 				
@@ -134,7 +187,7 @@ public class MessagePrinter implements StateMachine {
 			}
 			
 			this.snapshotInprogress = true;
-			copyOfMessages.addAll(this.messages);
+			copyOfMessages.addAll(this.messages.values());
 		}
 		
 		return CompletableFuture.supplyAsync(() -> {
@@ -199,6 +252,21 @@ public class MessagePrinter implements StateMachine {
 		
 		return null;
 	}
+
+	@Override
+	public void rollback(long logIndex, byte[] data) {
+		System.out.println(String.format("Rollback index %d", logIndex));
+	}
+
+	@Override
+	public void preCommit(long logIndex, byte[] data) {
+		String message = new String(data, StandardCharsets.UTF_8);
+		System.out.println(String.format("PreCommit:%s at %d", message, logIndex));
+		int index = message.indexOf(':');
+		if(index > 0){
+			this.pendingMessages.put(message.substring(0, index), message);
+		}
+	}
 	
 	private static int read(RandomAccessFile stream, byte[] buffer){
 		try{
@@ -213,14 +281,171 @@ public class MessagePrinter implements StateMachine {
 			return -1;
 		}
 	}
-
-	@Override
-	public void rollback(long logIndex, byte[] data) {
-		System.out.println(String.format("Rollback index %d", logIndex));
+	
+	private void acceptRequests(){
+		try{
+			this.listener.accept(null, AsyncUtility.handlerFrom(
+					(AsynchronousSocketChannel connection, Object ctx) -> {
+						readRequest(connection);
+						acceptRequests();
+					}, 
+					(Throwable error, Object ctx) -> {
+						logger.error("accepting a new connection failed, will still keep accepting more requests", error);
+						acceptRequests();
+					}));
+		}catch(Exception exception){
+			logger.error("failed to accept new requests, will retry", exception);
+			this.acceptRequests();
+		}
 	}
-
-	@Override
-	public void preCommit(long logIndex, byte[] data) {
-		System.out.println(String.format("PreCommit:%s at %d", new String(data, StandardCharsets.UTF_8), logIndex));
+	
+	private void readRequest(AsynchronousSocketChannel connection){
+		ByteBuffer buffer = ByteBuffer.allocate(4);
+		try{
+			AsyncUtility.readFromChannel(connection, buffer, null, handlerFrom((Integer bytesRead, Object ctx) -> {
+				if(bytesRead.intValue() < 4){
+					logger.info("failed to read the request header from client socket");
+					closeSocket(connection);
+				}else{
+					try{
+						logger.debug("request header read, try to read the message");
+						int bodySize = 0;
+						for(int i = 0; i < 4; ++i){
+							int value = buffer.get(i);
+							bodySize = bodySize | (value << (i * 8));
+						}
+						
+						if(bodySize > 1024){
+							sendResponse(connection, "Bad Request");
+							return;
+						}
+						
+						System.out.printf("%d bytes in body", bodySize);
+						ByteBuffer bodyBuffer = ByteBuffer.allocate(bodySize);
+						readBody(connection, bodyBuffer);
+					}catch(Throwable runtimeError){
+						// if there are any conversion errors, we need to close the client socket to prevent more errors
+						closeSocket(connection);
+						logger.info("message reading/parsing error", runtimeError);
+					}
+				}
+			}, connection));
+		}catch(Exception readError){
+			logger.info("failed to read more request from client socket", readError);
+			closeSocket(connection);
+		}
+	}
+	
+	private void readBody(AsynchronousSocketChannel connection, ByteBuffer bodyBuffer){
+		try{
+			AsyncUtility.readFromChannel(connection, bodyBuffer, null, handlerFrom((Integer bytesRead, Object ctx) -> {
+				if(bytesRead.intValue() < bodyBuffer.limit()){
+					logger.info("failed to read the request body from client socket");
+					closeSocket(connection);
+				}else{
+					String message = new String(bodyBuffer.array(), StandardCharsets.UTF_8);
+					CompletableFuture<String> future = new CompletableFuture<String>();
+					future.whenCompleteAsync((String ack, Throwable err) -> {
+						if(err != null){
+							sendResponse(connection, err.getMessage());
+						}else{
+							sendResponse(connection, ack);
+						}
+					});
+					processMessage(message, future);
+				}
+			}, connection));
+		}catch(Exception readError){
+			logger.info("failed to read more request from client socket", readError);
+			closeSocket(connection);
+		}
+	}
+	
+	private void processMessage(String message, CompletableFuture<String> future){
+		System.out.println("Got message " + message);
+		int index = message.indexOf(':');
+		if(index <= 0){
+			future.complete("Bad message, No key");
+		}
+		
+		String key = message.substring(0, index);
+		if(this.messages.containsKey(key)){
+			future.complete("Already printed.");
+			this.uncommittedRequests.remove(key);
+			return;
+		}
+		
+		if(this.pendingMessages.containsKey(key)){
+			//BUG should be able to do chained completion with existing future related to that key
+			this.uncommittedRequests.put(key, future);
+			return;
+		}
+		
+		messageSender.appendEntries(new byte[][] { message.getBytes(StandardCharsets.UTF_8) }).whenCompleteAsync((Boolean result, Throwable err) -> {
+			if(err != null){
+				future.complete("System faulted, please retry");
+			}else if(!result){
+				future.complete("System is not ready");
+			}else{
+				uncommittedRequests.put(key, future);
+			}
+		});
+	}
+	
+	private void addMessage(String message){
+		int index = message.indexOf(':');
+		if(index <= 0){
+			return;
+		}
+		
+		String key = message.substring(0, index);
+		this.messages.put(key, message);
+		CompletableFuture<String> req = this.uncommittedRequests.get(key);
+		if(req != null){
+			req.complete("Printed.");
+			this.uncommittedRequests.remove(key);
+		}
+	}
+	
+	private void sendResponse(AsynchronousSocketChannel connection, String message){
+		byte[] resp = message.getBytes(StandardCharsets.UTF_8);
+		int respSize = resp.length;
+		ByteBuffer respBuffer = ByteBuffer.allocate(respSize + 4);
+		for(int i = 0; i < 4; ++i){
+			int value = (respSize >> (i * 8));
+			respBuffer.put((byte)(value & 0xFF));
+		}
+		
+		respBuffer.put(resp);
+		try{
+			AsyncUtility.writeToChannel(connection, respBuffer, null, handlerFrom((Integer bytesWrite, Object ctx) -> {
+				if(bytesWrite < respBuffer.limit()){
+					logger.info("failed to write all data back to response channel");
+					closeSocket(connection);
+				}else{
+					readRequest(connection);
+				}
+			}, connection));
+		}catch(Exception writeError){
+			logger.info("failed to write response to client socket", writeError);
+			closeSocket(connection);
+		}
+	}
+	
+	private <V, A> CompletionHandler<V, A> handlerFrom(BiConsumer<V, A> completed, AsynchronousSocketChannel connection) {
+	    return AsyncUtility.handlerFrom(completed, (Throwable error, A attachment) -> {
+	    				this.logger.info("socket server failure", error);
+	                    if(connection != null){
+	                    	closeSocket(connection);
+	                    }
+	                });
+	}
+	
+	private void closeSocket(AsynchronousSocketChannel connection){
+		try{
+    		connection.close();
+    	}catch(IOException ex){
+    		this.logger.info("failed to close client socket", ex);
+    	}
 	}
 }

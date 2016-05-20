@@ -23,7 +23,7 @@ public class App
 {
     public static void main( String[] args ) throws Exception
     {
-    	if(args.length != 2){
+    	if(args.length < 2){
     		System.out.println("Please specify execution mode and a base directory for this instance.");
     		return;
     	}
@@ -52,18 +52,25 @@ public class App
     		return;
     	}
 
+    	// Server mode
+    	int port = 8000;
+    	if(args.length >= 3){
+    		port = Integer.parseInt(args[2]);
+    	}
     	URI localEndpoint = new URI(config.getServer(stateManager.getServerId()).getEndpoint());
     	RaftParameters raftParameters = new RaftParameters(5000, 3000, 1500, 500, 5, 5, 5000, 0);
+    	MessagePrinter mp = new MessagePrinter(baseDir, port);
     	RaftContext context = new RaftContext(
     			stateManager,
-    			new MessagePrinter(baseDir),
+    			mp,
     			raftParameters,
     			new RpcTcpListener(localEndpoint.getPort()),
     			new Log4jLoggerFactory(),
     			new RpcTcpClientFactory());
-    	RaftConsensus.run(context);
-        System.out.println( "Press any key to exit." );
+    	mp.run(RaftConsensus.run(context));
+        System.out.println( "Press Enter to exit." );
         System.in.read();
+        mp.stop();
     }
     
     private static void executeAsClient(ClusterConfiguration configuration) throws Exception{
