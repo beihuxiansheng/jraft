@@ -930,19 +930,22 @@ public class RaftServer implements RaftMessageHandler {
 					// The state machine will not be able to commit anything before the snapshot is applied, so make this synchronously
 					// with election timer stopped as usually applying a snapshot may take a very long time
 					this.stopElectionTimer();
-					this.logger.info("successfully compact the log store, will now ask the statemachine to apply the snapshot");
-					if(!this.stateMachine.applySnapshot(snapshotSyncRequest.getSnapshot())){
-						this.logger.error("failed to apply the snapshot after log compacted, to ensure the safety, will shutdown the system");
-						System.exit(-1);
-						return false; //should never be reached
+					try{
+						this.logger.info("successfully compact the log store, will now ask the statemachine to apply the snapshot");
+						if(!this.stateMachine.applySnapshot(snapshotSyncRequest.getSnapshot())){
+							this.logger.error("failed to apply the snapshot after log compacted, to ensure the safety, will shutdown the system");
+							System.exit(-1);
+							return false; //should never be reached
+						}
+						
+						this.reconfigure(snapshotSyncRequest.getSnapshot().getLastConfig());
+						this.context.getServerStateManager().saveClusterConfiguration(this.config);
+						this.state.setCommitIndex(snapshotSyncRequest.getSnapshot().getLastLogIndex());
+						this.context.getServerStateManager().persistState(this.state);
+						this.logger.info("snapshot is successfully applied");
+					}finally{
+						this.restartElectionTimer();
 					}
-					
-					this.reconfigure(snapshotSyncRequest.getSnapshot().getLastConfig());
-					this.context.getServerStateManager().saveClusterConfiguration(this.config);
-					this.state.setCommitIndex(snapshotSyncRequest.getSnapshot().getLastLogIndex());
-					this.context.getServerStateManager().persistState(this.state);
-					this.logger.info("snapshot is successfully applied");
-					this.restartElectionTimer();
 				}else{
 					this.logger.error("failed to compact the log store after a snapshot is received, will ask the leader to retry");
 					return false;
