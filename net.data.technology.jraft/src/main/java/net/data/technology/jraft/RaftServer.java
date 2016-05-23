@@ -173,12 +173,15 @@ public class RaftServer implements RaftMessageHandler {
 		response.setTerm(this.state.getTerm());
 		response.setSource(this.id);
 		response.setDestination(request.getSource());
+		
+		// After a snapshot the request.getLastLogIndex() may less than logStore.getStartingIndex() but equals to logStore.getStartingIndex() -1
+		// In this case, log is Okay if request.getLastLogIndex() == lastSnapshot.getLastLogIndex() && request.getLastLogTerm() == lastSnapshot.getLastTerm()
 		boolean logOkay = request.getLastLogIndex() == 0 ||
 				(request.getLastLogIndex() < this.logStore.getFirstAvailableIndex() && 
-						request.getLastLogTerm() == this.logStore.getLogEntryAt(request.getLastLogIndex()).getTerm());
+						request.getLastLogTerm() == this.termForLastLog(request.getLastLogIndex()));
 		if(request.getTerm() < this.state.getTerm() || !logOkay){
 			response.setAccepted(false);
-			response.setNextIndex(0);
+			response.setNextIndex(this.logStore.getFirstAvailableIndex());
 			return response;
 		}
 		
@@ -366,7 +369,11 @@ public class RaftServer implements RaftMessageHandler {
 		if(peer.makeBusy()){
 			peer.SendRequest(this.createAppendEntriesRequest(peer))
 				.whenCompleteAsync((RaftResponseMessage response, Throwable error) -> {
-					handlePeerResponse(response, error);
+					try{
+						handlePeerResponse(response, error);
+					}catch(Throwable err){
+						this.logger.error("Uncaught exception %s", err.toString());
+					}
 				});
 			return true;
 		}
@@ -438,11 +445,14 @@ public class RaftServer implements RaftMessageHandler {
 			needToCatchup = peer.clearPendingCommit() || response.getNextIndex() < this.logStore.getFirstAvailableIndex();
 		}else{
 			synchronized(peer){
-				peer.setNextLogIndex(peer.getNextLogIndex() - 1);
+				// Improvement: if peer's real log length is less than was assumed, reset to that length directly
+				if(response.getNextIndex() > 0 && peer.getNextLogIndex() > response.getNextIndex()){
+					peer.setNextLogIndex(response.getNextIndex());
+				}else{
+					peer.setNextLogIndex(peer.getNextLogIndex() - 1);
+				}
 			}
 		}
-		
-		peer.setFree();
 		
 		// This may not be a leader anymore, such as the response was sent out long time ago
         // and the role was updated by UpdateTerm call
@@ -484,8 +494,6 @@ public class RaftServer implements RaftMessageHandler {
 		}else{
 			this.logger.info("peer declines to install the snapshot, will retry");
 		}
-		
-		peer.setFree();
 		
 		// This may not be a leader anymore, such as the response was sent out long time ago
         // and the role was updated by UpdateTerm call
@@ -569,6 +577,7 @@ public class RaftServer implements RaftMessageHandler {
 		for(PeerServer server : this.peers.values()){
 			server.setNextLogIndex(this.logStore.getFirstAvailableIndex());
 			server.setSnapshotInSync(null);
+			server.setFree();
 			this.enableHeartbeatForPeer(server);
 		}
 		
@@ -749,18 +758,18 @@ public class RaftServer implements RaftMessageHandler {
 			System.exit(-1);
 		}
 		
-		// for syncing the snapshots
-		if(lastLogIndex > 0 && lastLogIndex < startingIndex){
+		// for syncing the snapshots, if the lastLogIndex == lastSnapshot.getLastLogIndex, we could get the term from the snapshot
+		if(lastLogIndex > 0 && lastLogIndex < startingIndex - 1){
 			return this.createSyncSnapshotRequest(peer, lastLogIndex, term, commitIndex);
 		}
 		
-		LogEntry lastLogEntry = lastLogIndex > 0 ? this.logStore.getLogEntryAt(lastLogIndex) : null;
+		long lastLogTerm = this.termForLastLog(lastLogIndex);
 		LogEntry[] logEntries = (lastLogIndex + 1) >= currentNextIndex ? null : this.logStore.getLogEntries(lastLogIndex + 1, currentNextIndex);
 		this.logger.debug(
 				"An AppendEntries Request for %d with LastLogIndex=%d, LastLogTerm=%d, EntriesLength=%d, CommitIndex=%d and Term=%d", 
 				peer.getId(),
 				lastLogIndex,
-				lastLogEntry == null ? 0 : lastLogEntry.getTerm(),
+				lastLogTerm,
 				logEntries == null ? 0 : logEntries.length,
 				commitIndex,
 				term);
@@ -769,7 +778,7 @@ public class RaftServer implements RaftMessageHandler {
 		requestMessage.setSource(this.id);
 		requestMessage.setDestination(peer.getId());
 		requestMessage.setLastLogIndex(lastLogIndex);
-		requestMessage.setLastLogTerm(lastLogEntry == null ? 0 : lastLogEntry.getTerm());
+		requestMessage.setLastLogTerm(lastLogTerm);
 		requestMessage.setLogEntries(logEntries);
 		requestMessage.setCommitIndex(commitIndex);
 		requestMessage.setTerm(term);
@@ -882,6 +891,15 @@ public class RaftServer implements RaftMessageHandler {
 		}
 		
 		SnapshotSyncRequest snapshotSyncRequest = SnapshotSyncRequest.fromBytes(logEntries[0].getValue());
+
+		// We don't want to apply a snapshot that is older than we have, this may not happen, but just in case
+		if(snapshotSyncRequest.getOffset() == 0 &&
+				snapshotSyncRequest.getSnapshot().getLastLogIndex() < this.logStore.getStartIndex()){
+			this.logger.error("Protocol Error!! Received a snapshot which is older than this server (%d) has, exit.", this.id);
+			System.exit(-1);
+			return null;
+		}
+		
 		response.setAccepted(this.handleSnapshotSyncRequest(snapshotSyncRequest));
 		response.setNextIndex(snapshotSyncRequest.getOffset() + snapshotSyncRequest.getData().length); // the next index will be ignored if "accept" is false
 		return response;
@@ -1355,6 +1373,23 @@ public class RaftServer implements RaftMessageHandler {
 			requestMessage.setTerm(term);
 			return requestMessage;
 		}
+	}
+	
+	private long termForLastLog(long logIndex){
+		if(logIndex == 0){
+			return 0;
+		}
+		
+		if(logIndex >= this.logStore.getStartIndex()){
+			return this.logStore.getLogEntryAt(logIndex).getTerm();
+		}
+		
+		Snapshot lastSnapshot = this.stateMachine.getLastSnapshot();
+		if(lastSnapshot == null || logIndex != lastSnapshot.getLastLogIndex()){
+			throw new IllegalArgumentException("logIndex is beyond the range that no term could be retrieved");
+		}
+		
+		return lastSnapshot.getLastLogTerm();
 	}
 	
 	static class RaftMessageSenderImpl implements RaftMessageSender {

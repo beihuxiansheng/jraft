@@ -130,6 +130,10 @@ public class PeerServer {
 		boolean isAppendRequest = request.getMessageType() == RaftMessageType.AppendEntriesRequest || request.getMessageType() == RaftMessageType.InstallSnapshotRequest;
 		return this.rpcClient.send(request)
 				.thenComposeAsync((RaftResponseMessage response) -> {
+					if(isAppendRequest){
+						this.setFree();
+					}
+
 					this.resumeHeartbeatingSpeed();
 					return CompletableFuture.completedFuture(response);
 				})
