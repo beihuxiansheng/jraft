@@ -628,7 +628,6 @@ public class RaftServer implements RaftMessageHandler {
 	
 	private void commit(long targetIndex){
 		if(targetIndex > this.state.getCommitIndex()){
-			boolean snapshotInAction = false;
 			try{
 				while(this.state.getCommitIndex() < targetIndex && this.state.getCommitIndex() < this.logStore.getFirstAvailableIndex() - 1){
 					long indexToCommit = this.state.getCommitIndex() + 1;
@@ -646,74 +645,10 @@ public class RaftServer implements RaftMessageHandler {
 					this.state.setCommitIndex(indexToCommit);
 					
 					// see if we need to do snapshots
-					if(this.context.getRaftParameters().getSnapshotDistance() > 0 
-						&& ((indexToCommit - this.logStore.getStartIndex()) > this.context.getRaftParameters().getSnapshotDistance())
-						&& this.snapshotInProgress.compareAndSet(0, 1)){
-						snapshotInAction = true;
-						Snapshot currentSnapshot = this.stateMachine.getLastSnapshot();
-						if(currentSnapshot != null && indexToCommit - currentSnapshot.getLastLogIndex() < this.context.getRaftParameters().getSnapshotDistance()){
-							this.logger.info("a very recent snapshot is available at index %d, will skip this one", currentSnapshot.getLastLogIndex());
-							this.snapshotInProgress.set(0);
-							snapshotInAction = false;
-						}else{
-							this.logger.info("creating a snapshot for index %d", indexToCommit);
-							
-							// get the latest configuration info
-							ClusterConfiguration config = this.config;
-							while(config.getLogIndex() > indexToCommit && config.getLastLogIndex() >= this.logStore.getStartIndex()){
-								config = ClusterConfiguration.fromBytes(this.logStore.getLogEntryAt(config.getLastLogIndex()).getValue());
-							}
-							
-							if(config.getLogIndex() > indexToCommit && config.getLastLogIndex() > 0 && config.getLastLogIndex() < this.logStore.getStartIndex()){
-								Snapshot lastSnapshot = this.stateMachine.getLastSnapshot();
-								if(lastSnapshot == null){
-									this.logger.error("No snapshot could be found while no configuration cannot be found in current committed logs, this is a system error, exiting");
-									System.exit(-1);
-									return;
-								}
-								
-								config = lastSnapshot.getLastConfig();
-							}else if(config.getLogIndex() > indexToCommit && config.getLastLogIndex() == 0){
-								this.logger.error("BUG!!! stop the system, there must be a configuration at index one");
-								System.exit(-1);
-							}
-							
-							long indexToCompact = indexToCommit - 1;
-							long logTermToCompact = this.logStore.getLogEntryAt(indexToCompact).getTerm();
-							Snapshot snapshot = new Snapshot(indexToCompact, logTermToCompact, config);
-							this.stateMachine.createSnapshot(snapshot).whenCompleteAsync((Boolean result, Throwable error) -> {
-								try{
-									if(error != null){
-										this.logger.error("failed to create a snapshot due to %s", error.getMessage());
-										return;
-									}
-									
-									if(!result.booleanValue()){
-										this.logger.info("the state machine rejects to create the snapshot");
-										return;
-									}
-									
-									synchronized(this){
-										this.logger.debug("snapshot created, compact the log store");
-										try{
-											this.logStore.compact(snapshot.getLastLogIndex());
-										}catch(Throwable ex){
-											this.logger.error("failed to compact the log store, no worries, the system still in a good shape", ex);
-										}
-									}
-								}finally{
-									this.snapshotInProgress.set(0);
-								}
-							});
-							snapshotInAction = false;
-						}
-					}
+					this.snapshotAndCompact(indexToCommit);
 				}
 			}catch(Throwable error){
 				this.logger.error("failed to commit to index %d, due to errors %s", targetIndex, error.toString());
-				if(snapshotInAction){
-					this.snapshotInProgress.compareAndSet(1, 0);
-				}
 			}
 			
 			// save the commitment state
@@ -727,6 +662,80 @@ public class RaftServer implements RaftMessageHandler {
 						peer.setPendingCommit();
 					}
 				}
+			}
+		}
+	}
+	
+	private void snapshotAndCompact(long indexCommitted){
+		boolean snapshotInAction = false; 
+		try{
+			// see if we need to do snapshots
+			if(this.context.getRaftParameters().getSnapshotDistance() > 0 
+				&& ((indexCommitted - this.logStore.getStartIndex()) > this.context.getRaftParameters().getSnapshotDistance())
+				&& this.snapshotInProgress.compareAndSet(0, 1)){
+				snapshotInAction = true;
+				Snapshot currentSnapshot = this.stateMachine.getLastSnapshot();
+				if(currentSnapshot != null && indexCommitted - currentSnapshot.getLastLogIndex() < this.context.getRaftParameters().getSnapshotDistance()){
+					this.logger.info("a very recent snapshot is available at index %d, will skip this one", currentSnapshot.getLastLogIndex());
+					this.snapshotInProgress.set(0);
+					snapshotInAction = false;
+				}else{
+					this.logger.info("creating a snapshot for index %d", indexCommitted);
+					
+					// get the latest configuration info
+					ClusterConfiguration config = this.config;
+					while(config.getLogIndex() > indexCommitted && config.getLastLogIndex() >= this.logStore.getStartIndex()){
+						config = ClusterConfiguration.fromBytes(this.logStore.getLogEntryAt(config.getLastLogIndex()).getValue());
+					}
+					
+					if(config.getLogIndex() > indexCommitted && config.getLastLogIndex() > 0 && config.getLastLogIndex() < this.logStore.getStartIndex()){
+						Snapshot lastSnapshot = this.stateMachine.getLastSnapshot();
+						if(lastSnapshot == null){
+							this.logger.error("No snapshot could be found while no configuration cannot be found in current committed logs, this is a system error, exiting");
+							System.exit(-1);
+							return;
+						}
+						
+						config = lastSnapshot.getLastConfig();
+					}else if(config.getLogIndex() > indexCommitted && config.getLastLogIndex() == 0){
+						this.logger.error("BUG!!! stop the system, there must be a configuration at index one");
+						System.exit(-1);
+					}
+					
+					long indexToCompact = indexCommitted - 1;
+					long logTermToCompact = this.logStore.getLogEntryAt(indexToCompact).getTerm();
+					Snapshot snapshot = new Snapshot(indexToCompact, logTermToCompact, config);
+					this.stateMachine.createSnapshot(snapshot).whenCompleteAsync((Boolean result, Throwable error) -> {
+						try{
+							if(error != null){
+								this.logger.error("failed to create a snapshot due to %s", error.getMessage());
+								return;
+							}
+							
+							if(!result.booleanValue()){
+								this.logger.info("the state machine rejects to create the snapshot");
+								return;
+							}
+							
+							synchronized(this){
+								this.logger.debug("snapshot created, compact the log store");
+								try{
+									this.logStore.compact(snapshot.getLastLogIndex());
+								}catch(Throwable ex){
+									this.logger.error("failed to compact the log store, no worries, the system still in a good shape", ex);
+								}
+							}
+						}finally{
+							this.snapshotInProgress.set(0);
+						}
+					});
+					snapshotInAction = false;
+				}
+			}
+		}catch(Throwable error){
+			this.logger.error("failed to compact logs at index %d, due to errors %s", indexCommitted, error.toString());
+			if(snapshotInAction){
+				this.snapshotInProgress.compareAndSet(1, 0);
 			}
 		}
 	}
@@ -764,7 +773,8 @@ public class RaftServer implements RaftMessageHandler {
 		}
 		
 		long lastLogTerm = this.termForLastLog(lastLogIndex);
-		LogEntry[] logEntries = (lastLogIndex + 1) >= currentNextIndex ? null : this.logStore.getLogEntries(lastLogIndex + 1, currentNextIndex);
+		long endIndex = Math.min(currentNextIndex, lastLogIndex + 1 + context.getRaftParameters().getMaximumAppendingSize()); 
+		LogEntry[] logEntries = (lastLogIndex + 1) >= endIndex ? null : this.logStore.getLogEntries(lastLogIndex + 1, endIndex);
 		this.logger.debug(
 				"An AppendEntries Request for %d with LastLogIndex=%d, LastLogTerm=%d, EntriesLength=%d, CommitIndex=%d and Term=%d", 
 				peer.getId(),
@@ -893,11 +903,11 @@ public class RaftServer implements RaftMessageHandler {
 		SnapshotSyncRequest snapshotSyncRequest = SnapshotSyncRequest.fromBytes(logEntries[0].getValue());
 
 		// We don't want to apply a snapshot that is older than we have, this may not happen, but just in case
-		if(snapshotSyncRequest.getOffset() == 0 &&
-				snapshotSyncRequest.getSnapshot().getLastLogIndex() < this.logStore.getStartIndex()){
-			this.logger.error("Protocol Error!! Received a snapshot which is older than this server (%d) has, exit.", this.id);
-			System.exit(-1);
-			return null;
+		if(snapshotSyncRequest.getSnapshot().getLastLogIndex() < this.logStore.getStartIndex()){
+			this.logger.error("Received a snapshot which is older than this server (%d)", this.id);
+			response.setNextIndex(0);
+			response.setAccepted(false);
+			return response;
 		}
 		
 		response.setAccepted(this.handleSnapshotSyncRequest(snapshotSyncRequest));
@@ -909,8 +919,17 @@ public class RaftServer implements RaftMessageHandler {
 		try{
 			this.stateMachine.saveSnapshotData(snapshotSyncRequest.getSnapshot(), snapshotSyncRequest.getOffset(), snapshotSyncRequest.getData());
 			if(snapshotSyncRequest.isDone()){
+				// Only follower will run this piece of code, but let's check it again
+				if(this.role != ServerRole.Follower){
+					this.logger.error("bad server role for applying a snapshot, exit for debugging");
+					System.exit(-1);
+				}
+				
 				this.logger.debug("sucessfully receive a snapshot from leader");
 				if(this.logStore.compact(snapshotSyncRequest.getSnapshot().getLastLogIndex())){
+					// The state machine will not be able to commit anything before the snapshot is applied, so make this synchronously
+					// with election timer stopped as usually applying a snapshot may take a very long time
+					this.stopElectionTimer();
 					this.logger.info("successfully compact the log store, will now ask the statemachine to apply the snapshot");
 					if(!this.stateMachine.applySnapshot(snapshotSyncRequest.getSnapshot())){
 						this.logger.error("failed to apply the snapshot after log compacted, to ensure the safety, will shutdown the system");
@@ -923,6 +942,7 @@ public class RaftServer implements RaftMessageHandler {
 					this.state.setCommitIndex(snapshotSyncRequest.getSnapshot().getLastLogIndex());
 					this.context.getServerStateManager().persistState(this.state);
 					this.logger.info("snapshot is successfully applied");
+					this.restartElectionTimer();
 				}else{
 					this.logger.error("failed to compact the log store after a snapshot is received, will ask the leader to retry");
 					return false;
@@ -1326,7 +1346,7 @@ public class RaftServer implements RaftMessageHandler {
 			Snapshot snapshot = context == null ? null : context.getSnapshot();
 			Snapshot lastSnapshot = this.stateMachine.getLastSnapshot();
 			if(snapshot == null || (lastSnapshot != null && lastSnapshot.getLastLogIndex() > snapshot.getLastLogIndex())){
-				snapshot = this.stateMachine.getLastSnapshot();
+				snapshot = lastSnapshot;
 				
 				if(snapshot == null || lastLogIndex > snapshot.getLastLogIndex()){
 					this.logger.error("system is running into fatal errors, failed to find a snapshot for peer %d(snapshot null: %s, snapshot doesn't contais lastLogIndex: %s)", peer.getId(), String.valueOf(snapshot == null), String.valueOf(lastLogIndex > snapshot.getLastLogIndex()));

@@ -18,7 +18,16 @@ public class RaftContext {
 		this.loggerFactory = logFactory;
 		
 		if(this.raftParameters == null){
-			this.raftParameters = new RaftParameters(300, 150, 75, 25, 1000, 100, 0, 0);
+			this.raftParameters = new RaftParameters()
+					.withElectionTimeoutUpper(300)
+					.withElectionTimeoutLower(150)
+					.withHeartbeatInterval(75)
+					.withRpcFailureBackoff(25)
+					.withMaximumAppendingSize(100)
+					.withLogSyncBatchSize(1000)
+					.withLogSyncStoppingGap(100)
+					.withSnapshotEnabled(0)
+					.withSyncSnapshotBlockSize(0);
 		}
 	}
 

@@ -10,27 +10,99 @@ public class RaftParameters {
 	private int logSyncStopGap;
 	private int snapshotDistance;
 	private int snapshotBlockSize;
+	private int maxAppendingSize;
 	
-	public RaftParameters(
-			int electionTimeoutUpper, 
-			int electionTimeoutLower,
-			int heartbeatInterval, 
-			int rpcFailureBackoff,
-			int logSyncBatchSize, 
-			int logSyncStopGap, 
-			int snapshotDistance,
-			int snapshotBlockSize){
-		if(heartbeatInterval >= electionTimeoutLower){
-			throw new IllegalArgumentException("electionTimeoutLower must be greater than heartbeatInterval");
-		}
-		this.electionTimeoutLowerBound = electionTimeoutLower;
-		this.electionTimeoutUpperBound = electionTimeoutUpper;
-		this.heartbeatInterval = heartbeatInterval;
-		this.rpcFailureBackoff = rpcFailureBackoff;
-		this.logSyncBatchSize = logSyncBatchSize;
+	/**
+	 * The tcp block size for syncing the snapshots
+	 * @param size
+	 * @return self
+	 */
+	public RaftParameters withSyncSnapshotBlockSize(int size){
+		this.snapshotBlockSize = size;
+		return this;
+	}
+	
+	/**
+	 * Enable log compact and snapshot with the commit distance
+	 * @param distance, log distance to compact between two snapshots
+	 * @return self
+	 */
+	public RaftParameters withSnapshotEnabled(int distance){
+		this.snapshotDistance = distance;
+		return this;
+	}
+	
+	/**
+	 * For new member that just joined the cluster, we will use log sync to ask it to catch up, 
+	 * and this parameter is to tell when to stop using log sync but appendEntries for the new server
+	 * when leaderCommitIndex - indexCaughtUp < logSyncStopGap, then appendEntries will be used  
+	 * @param logSyncStopGap
+	 * @return self
+	 */
+	public RaftParameters withLogSyncStoppingGap(int logSyncStopGap){
 		this.logSyncStopGap = logSyncStopGap;
-		this.snapshotDistance = snapshotDistance;
-		this.snapshotBlockSize = snapshotBlockSize;
+		return this;
+	}
+	
+	/**
+	 * For new member that just joined the cluster, we will use log sync to ask it to catch up, 
+	 * and this parameter is to specify how many log entries to pack for each sync request
+	 * @param logSyncBatchSize
+	 * @return self
+	 */
+	public RaftParameters withLogSyncBatchSize(int logSyncBatchSize){
+		this.logSyncBatchSize = logSyncBatchSize;
+		return this;
+	}
+	
+	/**
+	 * The maximum log entries could be attached to an appendEntries call
+	 * @param maxAppendingSize
+	 * @return self
+	 */
+	public RaftParameters withMaximumAppendingSize(int maxAppendingSize){
+		this.maxAppendingSize = maxAppendingSize;
+		return this;
+	}
+	
+	/**
+	 * Election timeout upper bound in milliseconds
+	 * @param electionTimeoutUpper
+	 * @return self
+	 */
+	public RaftParameters withElectionTimeoutUpper(int electionTimeoutUpper){
+		this.electionTimeoutUpperBound = electionTimeoutUpper;
+		return this;
+	}
+	
+	/**
+	 * Election timeout lower bound in milliseconds
+	 * @param electionTimeoutLower
+	 * @return self
+	 */
+	public RaftParameters withElectionTimeoutLower(int electionTimeoutLower){
+		this.electionTimeoutLowerBound = electionTimeoutLower;
+		return this;
+	}
+	
+	/**
+	 * heartbeat interval in milliseconds
+	 * @param heartbeatInterval
+	 * @return self
+	 */
+	public RaftParameters withHeartbeatInterval(int heartbeatInterval){
+		this.heartbeatInterval = heartbeatInterval;
+		return this;
+	}
+	
+	/**
+	 * Rpc failure backoff in milliseconds
+	 * @param rpcFailureBackoff
+	 * @return self
+	 */
+	public RaftParameters withRpcFailureBackoff(int rpcFailureBackoff){
+		this.rpcFailureBackoff = rpcFailureBackoff;
+		return this;
 	}
 
 	/**
@@ -104,5 +176,13 @@ public class RaftParameters {
 	 */
 	public int getSnapshotBlockSize() {
 		return snapshotBlockSize;
+	}
+	
+	/**
+	 * The maximum log entries in an appendEntries request
+	 * @return
+	 */
+	public int getMaximumAppendingSize(){
+		return this.maxAppendingSize;
 	}
 }

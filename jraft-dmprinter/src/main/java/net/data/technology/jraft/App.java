@@ -58,7 +58,16 @@ public class App
     		port = Integer.parseInt(args[2]);
     	}
     	URI localEndpoint = new URI(config.getServer(stateManager.getServerId()).getEndpoint());
-    	RaftParameters raftParameters = new RaftParameters(5000, 3000, 1500, 500, 5, 5, 5000, 0);
+    	RaftParameters raftParameters = new RaftParameters()
+				.withElectionTimeoutUpper(5000)
+				.withElectionTimeoutLower(3000)
+				.withHeartbeatInterval(1500)
+				.withRpcFailureBackoff(500)
+				.withMaximumAppendingSize(200)
+				.withLogSyncBatchSize(5)
+				.withLogSyncStoppingGap(5)
+				.withSnapshotEnabled(5000)
+				.withSyncSnapshotBlockSize(0);
     	MessagePrinter mp = new MessagePrinter(baseDir, port);
     	RaftContext context = new RaftContext(
     			stateManager,
