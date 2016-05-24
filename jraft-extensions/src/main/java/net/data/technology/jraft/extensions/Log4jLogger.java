@@ -42,4 +42,13 @@ public class Log4jLogger implements net.data.technology.jraft.Logger {
 		}
 	}
 
+	@Override
+	public void error(String format, Throwable error, Object... args) {
+		if(args != null){
+			this.logger.error(String.format(format, args), error);
+		}else{
+			this.logger.error(format, error);
+		}
+	}
+
 }

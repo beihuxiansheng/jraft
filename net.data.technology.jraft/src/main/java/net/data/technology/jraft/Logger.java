@@ -9,4 +9,6 @@ public interface Logger {
 	public void warning(String format, Object... args);
 	
 	public void error(String format, Object... args);
+	
+	public void error(String format, Throwable error, Object... args);
 }

@@ -44,6 +44,8 @@ public class RaftServer implements RaftMessageHandler {
 	private Random random;
 	private Callable<Void> electionTimeoutTask;
 	private ClusterConfiguration config;
+	private long quickCommitIndex;
+	private CommittingThread commitingThread;
 	
 	// fields for extended messages
 	private PeerServer serverToJoin = null;
@@ -99,7 +101,10 @@ public class RaftServer implements RaftMessageHandler {
 			}
 		}
 		
+		this.quickCommitIndex = this.state.getCommitIndex();
+		this.commitingThread = new CommittingThread(this);
 		this.role = ServerRole.Follower;
+		new Thread(this.commitingThread).start();
 		this.restartElectionTimer();
 		this.logger.info("Server %d started", this.id);
 	}
@@ -627,32 +632,8 @@ public class RaftServer implements RaftMessageHandler {
 	}
 	
 	private void commit(long targetIndex){
-		if(targetIndex > this.state.getCommitIndex()){
-			try{
-				while(this.state.getCommitIndex() < targetIndex && this.state.getCommitIndex() < this.logStore.getFirstAvailableIndex() - 1){
-					long indexToCommit = this.state.getCommitIndex() + 1;
-					LogEntry logEntry = this.logStore.getLogEntryAt(indexToCommit);
-					if(logEntry.getValueType() == LogValueType.Application){
-						this.stateMachine.commit(indexToCommit, logEntry.getValue());
-					}else if(logEntry.getValueType() == LogValueType.Configuration){
-						this.context.getServerStateManager().saveClusterConfiguration(this.config);
-						if(this.catchingUp && this.config.getServer(this.id) != null){
-							this.logger.info("this server is committed as one of cluster members");
-							this.catchingUp = false;
-						}
-					}
-					
-					this.state.setCommitIndex(indexToCommit);
-					
-					// see if we need to do snapshots
-					this.snapshotAndCompact(indexToCommit);
-				}
-			}catch(Throwable error){
-				this.logger.error("failed to commit to index %d, due to errors %s", targetIndex, error.toString());
-			}
-			
-			// save the commitment state
-			this.context.getServerStateManager().persistState(this.state);
+		if(targetIndex > this.quickCommitIndex){
+			this.quickCommitIndex = targetIndex;
 			
 			// if this is a leader notify peers to commit as well
 			// for peers that are free, send the request, otherwise, set pending commit flag for that peer
@@ -663,6 +644,10 @@ public class RaftServer implements RaftMessageHandler {
 					}
 				}
 			}
+		}
+		
+		if(this.logStore.getFirstAvailableIndex() - 1 > this.state.getCommitIndex() && this.quickCommitIndex > this.state.getCommitIndex()){
+			this.commitingThread.moreToCommit();
 		}
 	}
 	
@@ -750,7 +735,7 @@ public class RaftServer implements RaftMessageHandler {
 		synchronized(this){
 			startingIndex = this.logStore.getStartIndex();
 			currentNextIndex = this.logStore.getFirstAvailableIndex();
-			commitIndex = this.state.getCommitIndex();
+			commitIndex = this.quickCommitIndex;
 			term = this.state.getTerm();
 		}
 		
@@ -941,6 +926,7 @@ public class RaftServer implements RaftMessageHandler {
 						this.reconfigure(snapshotSyncRequest.getSnapshot().getLastConfig());
 						this.context.getServerStateManager().saveClusterConfiguration(this.config);
 						this.state.setCommitIndex(snapshotSyncRequest.getSnapshot().getLastLogIndex());
+						this.quickCommitIndex = snapshotSyncRequest.getSnapshot().getLastLogIndex();
 						this.context.getServerStateManager().persistState(this.state);
 						this.logger.info("snapshot is successfully applied");
 					}finally{
@@ -1101,7 +1087,7 @@ public class RaftServer implements RaftMessageHandler {
 			return response;
 		}
 		
-		if(this.configChanging || this.config.getLogIndex() == 0 || this.config.getLogIndex() > this.state.getCommitIndex()){
+		if(this.configChanging || this.config.getLogIndex() == 0 || this.config.getLogIndex() > this.quickCommitIndex){
 			// the previous config has not committed yet
 			this.logger.info("previous config has not committed yet");
 			return response;
@@ -1121,7 +1107,7 @@ public class RaftServer implements RaftMessageHandler {
 		
 		this.configChanging = true;
 		RaftRequestMessage leaveClusterRequest = new RaftRequestMessage();
-		leaveClusterRequest.setCommitIndex(this.state.getCommitIndex());
+		leaveClusterRequest.setCommitIndex(this.quickCommitIndex);
 		leaveClusterRequest.setDestination(peer.getId());
 		leaveClusterRequest.setLastLogIndex(this.logStore.getFirstAvailableIndex() - 1);
 		leaveClusterRequest.setLastLogTerm(0);
@@ -1160,7 +1146,7 @@ public class RaftServer implements RaftMessageHandler {
 			return response;
 		}
 		
-		if(this.configChanging || this.config.getLogIndex() == 0 || this.config.getLogIndex() > this.state.getCommitIndex()){
+		if(this.configChanging || this.config.getLogIndex() == 0 || this.config.getLogIndex() > this.quickCommitIndex){
 			// the previous config has not committed yet
 			this.logger.info("previous config has not committed yet");
 			return response;
@@ -1209,7 +1195,7 @@ public class RaftServer implements RaftMessageHandler {
 	
 	private void syncLogsToNewComingServer(long startIndex){
 		// only sync committed logs
-		int gap = (int)(this.state.getCommitIndex() - startIndex);
+		int gap = (int)(this.quickCommitIndex - startIndex);
 		if(gap < this.context.getRaftParameters().getLogSyncStopGap()){
 			
 			this.logger.info("LogSync is done for server %d with log gap %d, now put the server into cluster", this.serverToJoin.getId(), gap);
@@ -1231,13 +1217,13 @@ public class RaftServer implements RaftMessageHandler {
 		
 		RaftRequestMessage request = null;
 		if(startIndex > 0 && startIndex < this.logStore.getStartIndex()){
-			request = this.createSyncSnapshotRequest(this.serverToJoin, startIndex, this.state.getTerm(), this.state.getCommitIndex());
+			request = this.createSyncSnapshotRequest(this.serverToJoin, startIndex, this.state.getTerm(), this.quickCommitIndex);
 			
 		}else{
 			int sizeToSync = Math.min(gap, this.context.getRaftParameters().getLogSyncBatchSize());
 			byte[] logPack = this.logStore.packLog(startIndex, sizeToSync);
 			request = new RaftRequestMessage();
-			request.setCommitIndex(this.state.getCommitIndex());
+			request.setCommitIndex(this.quickCommitIndex);
 			request.setDestination(this.serverToJoin.getId());
 			request.setSource(this.id);
 			request.setTerm(this.state.getTerm());
@@ -1253,7 +1239,7 @@ public class RaftServer implements RaftMessageHandler {
 	
 	private void inviteServerToJoinCluster(){
 		RaftRequestMessage request = new RaftRequestMessage();
-		request.setCommitIndex(this.state.getCommitIndex());
+		request.setCommitIndex(this.quickCommitIndex);
 		request.setDestination(this.serverToJoin.getId());
 		request.setSource(this.id);
 		request.setTerm(this.state.getTerm());
@@ -1293,6 +1279,7 @@ public class RaftServer implements RaftMessageHandler {
 		this.leader = request.getSource();
 		this.state.setTerm(request.getTerm());
 		this.state.setCommitIndex(0);
+		this.quickCommitIndex = 0;
 		this.state.setVotedFor(-1);
 		this.context.getServerStateManager().persistState(this.state);
 		this.stopElectionTimer();
@@ -1503,5 +1490,64 @@ public class RaftServer implements RaftMessageHandler {
 			
 			return result;
 		}
+	}
+	
+	static class CommittingThread implements Runnable{
+
+		private RaftServer server;
+		private Object conditionalLock;
+		
+		CommittingThread(RaftServer server){
+			this.server = server;
+			this.conditionalLock = new Object();
+		}
+		
+		void moreToCommit(){
+			synchronized(this.conditionalLock){
+				this.conditionalLock.notify();
+			}
+		}
+		
+		@Override
+		public void run() {
+			while(true){
+				try{
+					long currentCommitIndex = server.state.getCommitIndex(); 
+					while(server.quickCommitIndex <= currentCommitIndex
+							|| currentCommitIndex >= server.logStore.getFirstAvailableIndex() - 1){
+						synchronized(this.conditionalLock){
+							this.conditionalLock.wait();
+						}
+						
+						currentCommitIndex = server.state.getCommitIndex();
+					}
+					
+					while(currentCommitIndex < server.quickCommitIndex && currentCommitIndex < server.logStore.getFirstAvailableIndex() - 1){
+						currentCommitIndex += 1;
+						LogEntry logEntry = server.logStore.getLogEntryAt(currentCommitIndex);
+						if(logEntry.getValueType() == LogValueType.Application){
+							server.stateMachine.commit(currentCommitIndex, logEntry.getValue());
+						}else if(logEntry.getValueType() == LogValueType.Configuration){
+							synchronized(server){
+								server.context.getServerStateManager().saveClusterConfiguration(server.config);
+								if(server.catchingUp && server.config.getServer(server.id) != null){
+									server.logger.info("this server is committed as one of cluster members");
+									server.catchingUp = false;
+								}
+							}
+						}
+						
+						server.state.setCommitIndex(currentCommitIndex);
+						server.snapshotAndCompact(currentCommitIndex);
+					}
+
+					server.context.getServerStateManager().persistState(server.state);
+				}catch(Throwable error){
+					server.logger.error("error %s encountered for committing thread, which should not happen, according to this, state machine may not have further progress, stop the system", error, error.getMessage());
+					System.exit(-1);
+				}
+			}
+		}
+		
 	}
 }

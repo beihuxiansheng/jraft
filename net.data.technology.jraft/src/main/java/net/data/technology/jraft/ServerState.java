@@ -31,6 +31,8 @@ public class ServerState {
 	}
 
 	public void setCommitIndex(long commitIndex) {
-		this.commitIndex = commitIndex;
+		if(commitIndex > this.commitIndex){
+			this.commitIndex = commitIndex;
+		}
 	}
 }
