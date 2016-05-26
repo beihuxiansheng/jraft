@@ -888,7 +888,7 @@ public class RaftServer implements RaftMessageHandler {
 		SnapshotSyncRequest snapshotSyncRequest = SnapshotSyncRequest.fromBytes(logEntries[0].getValue());
 
 		// We don't want to apply a snapshot that is older than we have, this may not happen, but just in case
-		if(snapshotSyncRequest.getSnapshot().getLastLogIndex() < this.logStore.getStartIndex()){
+		if(snapshotSyncRequest.getSnapshot().getLastLogIndex() < this.quickCommitIndex){
 			this.logger.error("Received a snapshot which is older than this server (%d)", this.id);
 			response.setNextIndex(0);
 			response.setAccepted(false);
