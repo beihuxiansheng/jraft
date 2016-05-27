@@ -1087,7 +1087,7 @@ public class RaftServer implements RaftMessageHandler {
 			return response;
 		}
 		
-		if(this.configChanging || this.config.getLogIndex() == 0 || this.config.getLogIndex() > this.quickCommitIndex){
+		if(this.configChanging || this.config.getLogIndex() == 0 || this.config.getLogIndex() > this.state.getCommitIndex()){
 			// the previous config has not committed yet
 			this.logger.info("previous config has not committed yet");
 			return response;
@@ -1146,7 +1146,7 @@ public class RaftServer implements RaftMessageHandler {
 			return response;
 		}
 		
-		if(this.configChanging || this.config.getLogIndex() == 0 || this.config.getLogIndex() > this.quickCommitIndex){
+		if(this.configChanging || this.config.getLogIndex() == 0 || this.config.getLogIndex() > this.state.getCommitIndex()){
 			// the previous config has not committed yet
 			this.logger.info("previous config has not committed yet");
 			return response;

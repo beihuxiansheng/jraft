@@ -19,10 +19,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.StringTokenizer;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -382,6 +384,50 @@ public class MessagePrinter implements StateMachine {
 				future.complete("Done.");
 			}else{
 				future.complete("Bad message, No key");
+			}
+			
+			return;
+		}
+		
+		if(message.startsWith("addsrv:")){
+			StringTokenizer tokenizer = new StringTokenizer(message.substring(index + 1), ",");
+			ArrayList<String> values = new ArrayList<String>();
+			while(tokenizer.hasMoreTokens()){
+				values.add(tokenizer.nextToken());
+			}
+			
+			if(values.size() == 2){
+				ClusterServer server = new ClusterServer();
+				server.setEndpoint(values.get(1));
+				server.setId(Integer.parseInt(values.get(0)));
+	    		messageSender.addServer(server).whenCompleteAsync((Boolean result, Throwable err) -> {
+	    			if(err != null){
+	    				future.complete("System faulted, please retry");
+	    			}else if(!result){
+	    				future.complete("System rejected");
+	    			}else{
+	    				future.complete("Accpeted, server is being added");
+	    			}
+	    		});
+			}else{
+				future.complete("Bad request");
+			}
+			
+			return;
+		}else if(message.startsWith("rmsrv:")){
+			try{
+				int id = Integer.parseInt(message.substring(index + 1));
+				messageSender.removeServer(id).whenCompleteAsync((Boolean result, Throwable err) -> {
+					if(err != null){
+	    				future.complete("System faulted, please retry");
+	    			}else if(!result){
+	    				future.complete("System rejected");
+	    			}else{
+	    				future.complete("Accpeted, server is being removed");
+	    			}
+				});
+			}catch(Throwable err){
+				future.complete("Bad request");
 			}
 			
 			return;
