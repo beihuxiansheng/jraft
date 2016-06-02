@@ -33,5 +33,4 @@ I know it's lack of documentations, I will try my best, but if you can help, let
 Here is the list of features planned for this project, 
 - [ ] Implement Http Based **RpcListener** and **RpcClient** plus **RpcClientFactory**
 - [ ] Implement MappedFileBasedSequentialLogStore for **SequentialLogStore** to improve the overall system performance
-- [ ] Implement a InProc based Distributed Cache Library for Http based Applications
 - [ ] Implement a distributed database system by leveraging existing Java based Database system
