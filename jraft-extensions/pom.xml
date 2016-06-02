@@ -31,7 +31,7 @@
     <dependency>
       <groupId>net.data-technology.jraft</groupId>
       <artifactId>jraft</artifactId>
-      <version>0.9.0</version>
+      <version>1.0.0</version>
     </dependency>
     
     <dependency>
@@ -39,6 +39,17 @@
       <artifactId>gson</artifactId>
       <version>2.6.2</version>
 	</dependency>
+    <dependency>
+    	<groupId>org.apache.httpcomponents</groupId>
+    	<artifactId>httpasyncclient</artifactId>
+    	<version>4.1.1</version>
+    </dependency>
+    <dependency>
+    	<groupId>javax.servlet</groupId>
+    	<artifactId>javax.servlet-api</artifactId>
+    	<version>3.1.0</version>
+    	<scope>provided</scope>
+    </dependency>
   </dependencies>
   <build>
   	<plugins>
