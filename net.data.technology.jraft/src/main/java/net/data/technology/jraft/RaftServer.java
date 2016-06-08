@@ -343,14 +343,13 @@ public class RaftServer implements RaftMessageHandler {
 			return;
 		}
 		
-		LogEntry lastLogEntry = this.logStore.getLastLogEntry();
 		for(PeerServer peer : this.peers.values()){
 			RaftRequestMessage request = new RaftRequestMessage();
 			request.setMessageType(RaftMessageType.RequestVoteRequest);
 			request.setDestination(peer.getId());
 			request.setSource(this.id);
 			request.setLastLogIndex(this.logStore.getFirstAvailableIndex() - 1);
-			request.setLastLogTerm(lastLogEntry == null ? 0 : lastLogEntry.getTerm());
+			request.setLastLogTerm(this.termForLastLog(this.logStore.getFirstAvailableIndex() - 1));
 			request.setTerm(this.state.getTerm());
 			this.logger.debug("send %s to server %d with term %d", RaftMessageType.RequestVoteRequest.toString(), peer.getId(), this.state.getTerm());
 			peer.SendRequest(request).whenCompleteAsync((RaftResponseMessage response, Throwable error) -> {
