@@ -31,6 +31,6 @@ I know it's lack of documentations, I will try my best, but if you can help, let
 
 ## Planning
 Here is the list of features planned for this project, 
-- [ ] Implement Http Based **RpcListener** and **RpcClient** plus **RpcClientFactory**
+- [x] Implement Http Based **RpcListener** and **RpcClient** plus **RpcClientFactory**
 - [ ] Implement MappedFileBasedSequentialLogStore for **SequentialLogStore** to improve the overall system performance
 - [ ] Implement a distributed database system by leveraging existing Java based Database system
