@@ -2,6 +2,7 @@ package net.data.technology.jraft;
 
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
@@ -22,6 +23,7 @@ public class PeerServer {
 	private long matchedIndex;
 	private boolean heartbeatEnabled;
 	private SnapshotSyncContext snapshotSyncContext;
+	private Executor executor;
 	
 	public PeerServer(ClusterServer server, RaftContext context, final Consumer<PeerServer> heartbeatConsumer){
 		this.clusterConfig = server;
@@ -36,6 +38,7 @@ public class PeerServer {
 		this.nextLogIndex = 1;
 		this.matchedIndex = 0;
 		this.heartbeatEnabled = false;
+		this.executor = context.getScheduledExecutor();
 		PeerServer self = this;
 		this.heartbeatTimeoutHandler = new Callable<Void>(){
 
@@ -136,7 +139,7 @@ public class PeerServer {
 
 					this.resumeHeartbeatingSpeed();
 					return CompletableFuture.completedFuture(response);
-				})
+				}, this.executor)
 				.exceptionally((Throwable error) -> {
 					if(isAppendRequest){
 						this.setFree();

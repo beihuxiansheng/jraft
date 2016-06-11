@@ -12,7 +12,6 @@ import java.util.Collections;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.function.BiConsumer;
 
 import org.apache.log4j.LogManager;
@@ -30,18 +29,17 @@ public class RpcTcpListener implements RpcListener {
 	private ExecutorService executorService;
 	private List<AsynchronousSocketChannel> connections;
 	
-	public RpcTcpListener(int port){
+	public RpcTcpListener(int port, ExecutorService executorService){
 		this.port = port;
+		this.executorService = executorService;
 		this.logger = LogManager.getLogger(getClass());
 		this.connections = Collections.synchronizedList(new LinkedList<AsynchronousSocketChannel>());
 	}
 
 	@Override
 	public void startListening(RaftMessageHandler messageHandler) {
-		int processors = Runtime.getRuntime().availableProcessors();
-		executorService = Executors.newFixedThreadPool(processors);
 		try{
-			AsynchronousChannelGroup channelGroup = AsynchronousChannelGroup.withThreadPool(executorService);
+			AsynchronousChannelGroup channelGroup = AsynchronousChannelGroup.withThreadPool(this.executorService);
 			this.listener = AsynchronousServerSocketChannel.open(channelGroup);
 			this.listener.setOption(StandardSocketOptions.SO_REUSEADDR, true);
 			this.listener.bind(new InetSocketAddress(this.port));

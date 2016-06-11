@@ -13,6 +13,8 @@ import java.util.List;
 import java.util.Random;
 import java.util.StringTokenizer;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 
 import net.data.technology.jraft.extensions.FileBasedServerStateManager;
 import net.data.technology.jraft.extensions.Log4jLoggerFactory;
@@ -32,9 +34,10 @@ public class App
     		System.out.println("only client and server modes are supported");
     		return;
     	}
-    	
+
+    	ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(Runtime.getRuntime().availableProcessors());
     	if("dummy".equalsIgnoreCase(args[0])){
-    		executeInDummyMode(args[1]);
+    		executeInDummyMode(args[1], executor);
     		return;
     	}
     	
@@ -48,7 +51,7 @@ public class App
     	ClusterConfiguration config = stateManager.loadClusterConfiguration();
     	
     	if("client".equalsIgnoreCase(args[0])){
-    		executeAsClient(config);
+    		executeAsClient(config, executor);
     		return;
     	}
 
@@ -73,17 +76,18 @@ public class App
     			stateManager,
     			mp,
     			raftParameters,
-    			new RpcTcpListener(localEndpoint.getPort()),
+    			new RpcTcpListener(localEndpoint.getPort(), executor),
     			new Log4jLoggerFactory(),
-    			new RpcTcpClientFactory());
+    			new RpcTcpClientFactory(executor),
+    			executor);
     	mp.run(RaftConsensus.run(context));
         System.out.println( "Press Enter to exit." );
         System.in.read();
         mp.stop();
     }
     
-    private static void executeAsClient(ClusterConfiguration configuration) throws Exception{
-    	RaftClient client = new RaftClient(new RpcTcpClientFactory(), configuration, new Log4jLoggerFactory());
+    private static void executeAsClient(ClusterConfiguration configuration, ExecutorService executor) throws Exception{
+    	RaftClient client = new RaftClient(new RpcTcpClientFactory(executor), configuration, new Log4jLoggerFactory());
     	BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));
     	while(true){
     		System.out.print("Message:");
@@ -131,13 +135,13 @@ public class App
      * This is used to verify the rpc module's functionality
      * @param mode
      */
-    private static void executeInDummyMode(String mode) throws Exception{
+    private static void executeInDummyMode(String mode, ExecutorService executor) throws Exception{
     	if("server".equalsIgnoreCase(mode)){
-    		RpcTcpListener listener = new RpcTcpListener(9001);
+    		RpcTcpListener listener = new RpcTcpListener(9001, executor);
     		listener.startListening(new DummyMessageHandler());
     		System.in.read();
     	}else{
-    		RpcClient client = new RpcTcpClientFactory().createRpcClient("tcp://localhost:9001");
+    		RpcClient client = new RpcTcpClientFactory(executor).createRpcClient("tcp://localhost:9001");
     		int batchSize = 1000;
     		List<Pair<RaftRequestMessage, CompletableFuture<RaftResponseMessage> > > list = new LinkedList<Pair<RaftRequestMessage, CompletableFuture<RaftResponseMessage> > >();
     		BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));

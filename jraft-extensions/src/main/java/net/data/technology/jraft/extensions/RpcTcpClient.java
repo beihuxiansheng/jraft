@@ -3,10 +3,12 @@ package net.data.technology.jraft.extensions;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
+import java.nio.channels.AsynchronousChannelGroup;
 import java.nio.channels.AsynchronousSocketChannel;
 import java.nio.channels.CompletionHandler;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 
@@ -20,6 +22,7 @@ import net.data.technology.jraft.RpcClient;
 public class RpcTcpClient implements RpcClient {
 
 	private AsynchronousSocketChannel connection;
+	private AsynchronousChannelGroup channelGroup;
 	private ConcurrentLinkedQueue<AsyncTask<ByteBuffer>> readTasks;
 	private ConcurrentLinkedQueue<AsyncTask<RaftRequestMessage>> writeTasks;
 	private AtomicInteger readers;
@@ -27,13 +30,19 @@ public class RpcTcpClient implements RpcClient {
 	private InetSocketAddress remote;
 	private Logger logger;
 	
-	public RpcTcpClient(InetSocketAddress remote){
+	public RpcTcpClient(InetSocketAddress remote, ExecutorService executorService){
 		this.remote = remote;
 		this.logger = LogManager.getLogger(getClass());
 		this.readTasks = new ConcurrentLinkedQueue<AsyncTask<ByteBuffer>>();
 		this.writeTasks = new ConcurrentLinkedQueue<AsyncTask<RaftRequestMessage>>();
 		this.readers = new AtomicInteger(0);
 		this.writers = new AtomicInteger(0);
+		try{
+			this.channelGroup = AsynchronousChannelGroup.withThreadPool(executorService);
+		}catch(IOException err){
+			this.logger.error("failed to create channel group", err);
+			throw new RuntimeException("failed to create the channel group due to errors.");
+		}
 	}
 	
 	@Override
@@ -42,7 +51,7 @@ public class RpcTcpClient implements RpcClient {
 		CompletableFuture<RaftResponseMessage> result = new CompletableFuture<RaftResponseMessage>();
 		if(this.connection == null || !this.connection.isOpen()){
 			try{
-				this.connection = AsynchronousSocketChannel.open();
+				this.connection = AsynchronousSocketChannel.open(this.channelGroup);
 				this.connection.connect(this.remote, new AsyncTask<RaftRequestMessage>(request, result), handlerFrom((Void v, AsyncTask<RaftRequestMessage> task) -> {
 					sendAndRead(task, false);
 				}));

@@ -14,7 +14,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -28,7 +27,6 @@ public class RaftServer implements RaftMessageHandler {
 			return (int)(arg1.longValue() - arg0.longValue());
 		}};
 	private RaftContext context;
-	private ScheduledThreadPoolExecutor scheduler;
 	private ScheduledFuture<?> scheduledElection;
 	private Map<Integer, PeerServer> peers = new HashMap<Integer, PeerServer>();
 	private ServerRole role;
@@ -69,7 +67,6 @@ public class RaftServer implements RaftMessageHandler {
 		this.context = context;
 		this.logger = context.getLoggerFactory().getLogger(this.getClass());
 		this.random = new Random(Calendar.getInstance().getTimeInMillis());
-		this.scheduler = new ScheduledThreadPoolExecutor(Runtime.getRuntime().availableProcessors());
 		this.electionTimeoutTask = new Callable<Void>(){
 
 			@Override
@@ -354,7 +351,7 @@ public class RaftServer implements RaftMessageHandler {
 			this.logger.debug("send %s to server %d with term %d", RaftMessageType.RequestVoteRequest.toString(), peer.getId(), this.state.getTerm());
 			peer.SendRequest(request).whenCompleteAsync((RaftResponseMessage response, Throwable error) -> {
 				handlePeerResponse(response, error);
-			});
+			}, this.context.getScheduledExecutor());
 		}
 	}
 	
@@ -378,7 +375,7 @@ public class RaftServer implements RaftMessageHandler {
 					}catch(Throwable err){
 						this.logger.error("Uncaught exception %s", err.toString());
 					}
-				});
+				}, this.context.getScheduledExecutor());
 			return true;
 		}
 		
@@ -538,7 +535,7 @@ public class RaftServer implements RaftMessageHandler {
 			synchronized(peer){
 				if(peer.isHeartbeatEnabled()){
 					// Schedule another heartbeat if heartbeat is still enabled 
-					peer.setHeartbeatTask(this.scheduler.schedule(peer.getHeartbeartHandler(), peer.getCurrentHeartbeatInterval(), TimeUnit.MILLISECONDS));
+					peer.setHeartbeatTask(this.context.getScheduledExecutor().schedule(peer.getHeartbeartHandler(), peer.getCurrentHeartbeatInterval(), TimeUnit.MILLISECONDS));
 				}else{
 					this.logger.debug("heartbeat is disabled for peer %d", peer.getId());
 				}
@@ -560,7 +557,7 @@ public class RaftServer implements RaftMessageHandler {
 
 		RaftParameters parameters = this.context.getRaftParameters();
 		int electionTimeout = parameters.getElectionTimeoutLowerBound() + this.random.nextInt(parameters.getElectionTimeoutUpperBound() - parameters.getElectionTimeoutLowerBound() + 1);
-		this.scheduledElection = this.scheduler.schedule(this.electionTimeoutTask, electionTimeout, TimeUnit.MILLISECONDS);
+		this.scheduledElection = this.context.getScheduledExecutor().schedule(this.electionTimeoutTask, electionTimeout, TimeUnit.MILLISECONDS);
 	}
 	
 	private void stopElectionTimer(){
@@ -597,7 +594,7 @@ public class RaftServer implements RaftMessageHandler {
 	private void enableHeartbeatForPeer(PeerServer peer){
 		peer.enableHeartbeat(true);
 		peer.resumeHeartbeatingSpeed();
-		peer.setHeartbeatTask(this.scheduler.schedule(peer.getHeartbeartHandler(), peer.getCurrentHeartbeatInterval(), TimeUnit.MILLISECONDS));
+		peer.setHeartbeatTask(this.context.getScheduledExecutor().schedule(peer.getHeartbeartHandler(), peer.getCurrentHeartbeatInterval(), TimeUnit.MILLISECONDS));
 	}
 	
 	private void becomeFollower(){
@@ -712,7 +709,7 @@ public class RaftServer implements RaftMessageHandler {
 						}finally{
 							this.snapshotInProgress.set(0);
 						}
-					});
+					}, this.context.getScheduledExecutor());
 					snapshotInAction = false;
 				}
 			}
@@ -1051,14 +1048,14 @@ public class RaftServer implements RaftMessageHandler {
 						this.logger.debug("retry the request");
 						server.slowDownHeartbeating();
 						final RaftServer self = this;
-						this.scheduler.schedule(new Callable<Void>(){
+						this.context.getScheduledExecutor().schedule(new Callable<Void>(){
 
 							@Override
 							public Void call() throws Exception {
 								self.logger.debug("retrying the request %s", request.getMessageType().toString());
 								server.SendRequest(request).whenCompleteAsync((RaftResponseMessage furtherResponse, Throwable furtherError) -> {
 									self.handleExtendedResponse(furtherResponse, furtherError);
-								});
+								}, self.context.getScheduledExecutor());
 								return null;
 							}}, server.getCurrentHeartbeatInterval(), TimeUnit.MILLISECONDS);
 					}
@@ -1115,7 +1112,7 @@ public class RaftServer implements RaftMessageHandler {
 		leaveClusterRequest.setSource(this.id);
 		peer.SendRequest(leaveClusterRequest).whenCompleteAsync((RaftResponseMessage peerResponse, Throwable error) -> {
 			this.handleExtendedResponse(peerResponse, error);
-		});
+		}, this.context.getScheduledExecutor());
 		response.setAccepted(true);
 		return response;
 	}
@@ -1233,7 +1230,7 @@ public class RaftServer implements RaftMessageHandler {
 		
 		this.serverToJoin.SendRequest(request).whenCompleteAsync((RaftResponseMessage response, Throwable error) -> {
 			this.handleExtendedResponse(response, error);
-		});
+		}, this.context.getScheduledExecutor());
 	}
 	
 	private void inviteServerToJoinCluster(){
@@ -1247,7 +1244,7 @@ public class RaftServer implements RaftMessageHandler {
 		request.setLogEntries(new LogEntry[] { new LogEntry(this.state.getTerm(), this.config.toBytes(), LogValueType.Configuration) });
 		this.serverToJoin.SendRequest(request).whenCompleteAsync((RaftResponseMessage response, Throwable error) -> {
 			this.handleExtendedResponse(response, error);
-		});
+		}, this.context.getScheduledExecutor());
 	}
 
 	private RaftResponseMessage handleJoinClusterRequest(RaftRequestMessage request){
@@ -1485,7 +1482,7 @@ public class RaftServer implements RaftMessageHandler {
 				}else{
 					result.complete(response.isAccepted());
 				}
-			});
+			}, this.server.context.getScheduledExecutor());
 			
 			return result;
 		}
