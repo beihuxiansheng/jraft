@@ -302,11 +302,6 @@ public class FileBasedSequentialLogStore implements SequentialLogStore {
 		if(lastLogIndex < this.startIndex){
 			throw new IllegalArgumentException("lastLogIndex out of range");
 		}
-		
-		if(lastLogIndex == this.startIndex){
-			this.logger.info("no compacting is needed");
-			return true;
-		}
 
 		this.backup();
 		long lastIndex = lastLogIndex - this.startIndex;
