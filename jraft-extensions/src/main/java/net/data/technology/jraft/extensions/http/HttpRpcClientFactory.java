@@ -5,9 +5,9 @@ import net.data.technology.jraft.RpcClientFactory;
 
 public class HttpRpcClientFactory implements RpcClientFactory {
 
-	@Override
-	public RpcClient createRpcClient(String endpoint) {
-		return new HttpRpcClient(endpoint);
-	}
+    @Override
+    public RpcClient createRpcClient(String endpoint) {
+        return new HttpRpcClient(endpoint);
+    }
 
 }

@@ -4,5 +4,5 @@ import java.util.concurrent.CompletableFuture;
 
 public interface RpcClient {
 
-	public CompletableFuture<RaftResponseMessage> send(RaftRequestMessage request);
+    public CompletableFuture<RaftResponseMessage> send(RaftRequestMessage request);
 }

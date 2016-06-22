@@ -22,54 +22,54 @@ import net.data.technology.jraft.RaftResponseMessage;
 import net.data.technology.jraft.RpcClient;
 
 public class HttpRpcClient implements RpcClient {
-	private String serverUrl;
-	private CloseableHttpAsyncClient httpClient;
-	private Gson gson;
-	private Logger logger;
-	
-	public HttpRpcClient(String serverUrl){
-		this.serverUrl = serverUrl;
-		this.httpClient = HttpAsyncClients.createDefault();
-		this.gson = new GsonBuilder().create();
-		this.logger = LogManager.getLogger(getClass());
-	}
+    private String serverUrl;
+    private CloseableHttpAsyncClient httpClient;
+    private Gson gson;
+    private Logger logger;
 
-	@Override
-	public CompletableFuture<RaftResponseMessage> send(RaftRequestMessage request) {
-		CompletableFuture<RaftResponseMessage> future = new CompletableFuture<RaftResponseMessage>();
-		String payload = this.gson.toJson(request);
-		HttpPost postRequest = new HttpPost(this.serverUrl);
-		postRequest.setEntity(new StringEntity(payload, StandardCharsets.UTF_8));
-		this.httpClient.execute(postRequest, new FutureCallback<HttpResponse>(){
+    public HttpRpcClient(String serverUrl){
+        this.serverUrl = serverUrl;
+        this.httpClient = HttpAsyncClients.createDefault();
+        this.gson = new GsonBuilder().create();
+        this.logger = LogManager.getLogger(getClass());
+    }
 
-			@Override
-			public void completed(HttpResponse result) {
-				// TODO Auto-generated method stub
-				if(result.getStatusLine().getStatusCode() != 200){
-					logger.info("receive an response error code " + String.valueOf(result.getStatusLine().getStatusCode()) + " from server");
-					future.completeExceptionally(new IOException("Service Error"));
-				}
-				
-				try{
-					InputStreamReader reader = new InputStreamReader(result.getEntity().getContent());
-					RaftResponseMessage response = gson.fromJson(reader, RaftResponseMessage.class);
-					future.complete(response);
-				}catch(Throwable error){
-					logger.info("fails to parse the response from server due to errors", error);
-					future.completeExceptionally(error);
-				}
-			}
+    @Override
+    public CompletableFuture<RaftResponseMessage> send(RaftRequestMessage request) {
+        CompletableFuture<RaftResponseMessage> future = new CompletableFuture<RaftResponseMessage>();
+        String payload = this.gson.toJson(request);
+        HttpPost postRequest = new HttpPost(this.serverUrl);
+        postRequest.setEntity(new StringEntity(payload, StandardCharsets.UTF_8));
+        this.httpClient.execute(postRequest, new FutureCallback<HttpResponse>(){
 
-			@Override
-			public void failed(Exception ex) {
-				future.completeExceptionally(ex);
-			}
+            @Override
+            public void completed(HttpResponse result) {
+                // TODO Auto-generated method stub
+                if(result.getStatusLine().getStatusCode() != 200){
+                    logger.info("receive an response error code " + String.valueOf(result.getStatusLine().getStatusCode()) + " from server");
+                    future.completeExceptionally(new IOException("Service Error"));
+                }
 
-			@Override
-			public void cancelled() {
-				future.completeExceptionally(new IOException("request cancelled"));
-			}});
-		return future;
-	}
+                try{
+                    InputStreamReader reader = new InputStreamReader(result.getEntity().getContent());
+                    RaftResponseMessage response = gson.fromJson(reader, RaftResponseMessage.class);
+                    future.complete(response);
+                }catch(Throwable error){
+                    logger.info("fails to parse the response from server due to errors", error);
+                    future.completeExceptionally(error);
+                }
+            }
+
+            @Override
+            public void failed(Exception ex) {
+                future.completeExceptionally(ex);
+            }
+
+            @Override
+            public void cancelled() {
+                future.completeExceptionally(new IOException("request cancelled"));
+            }});
+        return future;
+    }
 
 }

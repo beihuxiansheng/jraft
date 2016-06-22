@@ -20,35 +20,35 @@ import net.data.technology.jraft.RaftResponseMessage;
 
 public class JraftServlet extends HttpServlet {
 
-	private static final long serialVersionUID = -414289039785671159L;
-	private Logger logger;
-	private Gson gson;
-	
-	public JraftServlet(){
-		this.logger = LogManager.getLogger(getClass());
-		this.gson = new GsonBuilder().create();
-	}
-	
-	@Override
-	protected void doGet(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException{
-		response.getWriter().write("listening.");
-	}
-	
-	@Override
-	protected void doPost(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException{
-		RaftMessageHandler messageHandler = JraftServletListener.getMessageHandler(this.getServletContext());
-		if(messageHandler == null){
-			this.logger.error("JraftServletListener is not setup correctly, no message handler could be found.");;
-			response.setStatus(503); // Service is not available
-			response.getWriter().print("Jraft is not yet ready to serve");
-		}else{
-			InputStreamReader reader = new InputStreamReader(request.getInputStream());
-			RaftRequestMessage raftRequest = this.gson.fromJson(reader, RaftRequestMessage.class);
-			RaftResponseMessage raftResponse = messageHandler.processRequest(raftRequest);
-			response.setStatus(200);
-			response.setContentType("application/json");
-			response.getWriter().write(this.gson.toJson(raftResponse));
-		}
-	}
+    private static final long serialVersionUID = -414289039785671159L;
+    private Logger logger;
+    private Gson gson;
+
+    public JraftServlet(){
+        this.logger = LogManager.getLogger(getClass());
+        this.gson = new GsonBuilder().create();
+    }
+
+    @Override
+    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException{
+        response.getWriter().write("listening.");
+    }
+
+    @Override
+    protected void doPost(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException{
+        RaftMessageHandler messageHandler = JraftServletListener.getMessageHandler(this.getServletContext());
+        if(messageHandler == null){
+            this.logger.error("JraftServletListener is not setup correctly, no message handler could be found.");;
+            response.setStatus(503); // Service is not available
+            response.getWriter().print("Jraft is not yet ready to serve");
+        }else{
+            InputStreamReader reader = new InputStreamReader(request.getInputStream());
+            RaftRequestMessage raftRequest = this.gson.fromJson(reader, RaftRequestMessage.class);
+            RaftResponseMessage raftResponse = messageHandler.processRequest(raftRequest);
+            response.setStatus(200);
+            response.setContentType("application/json");
+            response.getWriter().write(this.gson.toJson(raftResponse));
+        }
+    }
 
 }

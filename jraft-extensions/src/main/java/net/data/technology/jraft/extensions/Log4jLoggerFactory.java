@@ -7,8 +7,8 @@ import net.data.technology.jraft.LoggerFactory;
 
 public class Log4jLoggerFactory implements LoggerFactory {
 
-	public Logger getLogger(Class<?> clazz) {
-		return new Log4jLogger(LogManager.getLogger(clazz));
-	}
+    public Logger getLogger(Class<?> clazz) {
+        return new Log4jLogger(LogManager.getLogger(clazz));
+    }
 
 }

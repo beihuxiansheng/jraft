@@ -17,52 +17,52 @@ import net.data.technology.jraft.extensions.Log4jLoggerFactory;
 
 public abstract class JraftServletListener implements RpcListener, ServletContextListener {
 
-	public static final String JRAFT_MESSAGE_SENDER = "$Jraft$Message$Sender";
-	public static final String JRAFT_MESSAGE_HANDLER = "$Jraft$Message$Handler";
-	
-	private ServletContext servletContext;
-	
-	public static RaftMessageHandler getMessageHandler(ServletContext context){
-		return (RaftMessageHandler)context.getAttribute(JRAFT_MESSAGE_HANDLER);
-	}
-	
-	public static RaftMessageSender getMessageSender(ServletContext context){
-		return (RaftMessageSender)context.getAttribute(JRAFT_MESSAGE_SENDER);
-	}
-	
-	@Override
-	public void contextInitialized(ServletContextEvent sce) {
-		this.servletContext = sce.getServletContext();
-		RaftContext context = new RaftContext(
-				this.getServerStateManager(),
-				this.getStateMachine(), 
-				this.getParameters(),
-				this, 
-				this.getLoggerFactory(), 
-				new HttpRpcClientFactory());
-		this.servletContext.setAttribute(JRAFT_MESSAGE_SENDER, RaftConsensus.run(context));
-	}
+    public static final String JRAFT_MESSAGE_SENDER = "$Jraft$Message$Sender";
+    public static final String JRAFT_MESSAGE_HANDLER = "$Jraft$Message$Handler";
 
-	@Override
-	public void contextDestroyed(ServletContextEvent sce) {
-	}
+    private ServletContext servletContext;
 
-	@Override
-	public void startListening(RaftMessageHandler messageHandler) {
-		this.servletContext.setAttribute(JRAFT_MESSAGE_HANDLER, messageHandler);
-	}
+    public static RaftMessageHandler getMessageHandler(ServletContext context){
+        return (RaftMessageHandler)context.getAttribute(JRAFT_MESSAGE_HANDLER);
+    }
 
-	@Override
-	public abstract void stop();
-	
-	protected abstract RaftParameters getParameters();
-	
-	protected abstract ServerStateManager getServerStateManager();
-	
-	protected abstract StateMachine getStateMachine();
-	
-	protected LoggerFactory getLoggerFactory(){
-		return new Log4jLoggerFactory();
-	}
+    public static RaftMessageSender getMessageSender(ServletContext context){
+        return (RaftMessageSender)context.getAttribute(JRAFT_MESSAGE_SENDER);
+    }
+
+    @Override
+    public void contextInitialized(ServletContextEvent sce) {
+        this.servletContext = sce.getServletContext();
+        RaftContext context = new RaftContext(
+                this.getServerStateManager(),
+                this.getStateMachine(),
+                this.getParameters(),
+                this,
+                this.getLoggerFactory(),
+                new HttpRpcClientFactory());
+        this.servletContext.setAttribute(JRAFT_MESSAGE_SENDER, RaftConsensus.run(context));
+    }
+
+    @Override
+    public void contextDestroyed(ServletContextEvent sce) {
+    }
+
+    @Override
+    public void startListening(RaftMessageHandler messageHandler) {
+        this.servletContext.setAttribute(JRAFT_MESSAGE_HANDLER, messageHandler);
+    }
+
+    @Override
+    public abstract void stop();
+
+    protected abstract RaftParameters getParameters();
+
+    protected abstract ServerStateManager getServerStateManager();
+
+    protected abstract StateMachine getStateMachine();
+
+    protected LoggerFactory getLoggerFactory(){
+        return new Log4jLoggerFactory();
+    }
 
 }
