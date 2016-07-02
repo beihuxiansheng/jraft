@@ -24,8 +24,9 @@ public interface SequentialLogStore {
     /**
      * Appends a log entry to store
      * @param logEntry
+     * @return the last appended log index
      */
-    public void append(LogEntry logEntry);
+    public long append(LogEntry logEntry);
 
     /**
      * Over writes a log entry at index of {@code index}

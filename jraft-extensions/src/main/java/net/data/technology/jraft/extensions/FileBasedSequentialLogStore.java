@@ -11,7 +11,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock.ReadLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock.WriteLock;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
@@ -31,6 +36,7 @@ public class FileBasedSequentialLogStore implements SequentialLogStore {
     private static final String LOG_STORE_FILE_BAK = "store.data.bak";
     private static final String LOG_START_INDEX_FILE_BAK = "store.sti.bak";
     private static final LogEntry zeroEntry = new LogEntry();
+    private static final int BUFFER_SIZE = 1000;
 
     private Logger logger;
     private RandomAccessFile indexFile;
@@ -38,11 +44,23 @@ public class FileBasedSequentialLogStore implements SequentialLogStore {
     private RandomAccessFile startIndexFile;
     private long entriesInStore;
     private long startIndex;
-    private LogEntry lastEntry;
     private Path logContainer;
+    private ReentrantReadWriteLock storeLock;
+    private ReadLock storeReadLock;
+    private WriteLock storeWriteLock;
+    private LogBuffer buffer;
+    private int bufferSize;
 
     public FileBasedSequentialLogStore(String logContainer){
+        this(logContainer, BUFFER_SIZE);
+    }
+    
+    public FileBasedSequentialLogStore(String logContainer, int bufferSize){
+        this.storeLock = new ReentrantReadWriteLock();
+        this.storeReadLock = this.storeLock.readLock();
+        this.storeWriteLock = this.storeLock.writeLock();
         this.logContainer = Paths.get(logContainer);
+        this.bufferSize = bufferSize;
         this.logger = LogManager.getLogger(getClass());
         try{
             this.indexFile = new RandomAccessFile(this.logContainer.resolve(LOG_INDEX_FILE).toString(), "rw");
@@ -56,7 +74,8 @@ public class FileBasedSequentialLogStore implements SequentialLogStore {
             }
 
             this.entriesInStore = this.indexFile.length() / Long.BYTES;
-            this.loadLastEntry();
+            this.buffer = new LogBuffer(this.entriesInStore > this.bufferSize ? (this.entriesInStore + this.startIndex - this.bufferSize) : this.startIndex, this.bufferSize);
+            this.fillBuffer();
             this.logger.debug(String.format("log store started with entriesInStore=%d, startIndex=%d", this.entriesInStore, this.startIndex));
         }catch(IOException exception){
             this.logger.error("failed to access log store", exception);
@@ -64,27 +83,53 @@ public class FileBasedSequentialLogStore implements SequentialLogStore {
     }
 
     @Override
-    public synchronized long getFirstAvailableIndex() {
-        return this.entriesInStore + this.startIndex;
-    }
-
-    @Override
-    public synchronized long getStartIndex() {
-        return this.startIndex;
-    }
-
-    @Override
-    public synchronized LogEntry getLastLogEntry() {
-        if(this.lastEntry == null){
-            return zeroEntry;
+    public long getFirstAvailableIndex() {
+        try{
+            this.storeReadLock.lock();
+            return this.entriesInStore + this.startIndex;
+        }finally{
+            this.storeReadLock.unlock();
         }
-
-        return this.lastEntry;
     }
 
     @Override
-    public synchronized void append(LogEntry logEntry) {
-        this.writeAt(this.entriesInStore + this.startIndex, logEntry);
+    public long getStartIndex() {
+        try{
+            this.storeReadLock.lock();
+            return this.startIndex;
+        }finally{
+            this.storeReadLock.unlock();
+        }
+    }
+
+    @Override
+    public LogEntry getLastLogEntry() {
+        LogEntry lastEntry = this.buffer.lastEntry();
+        return lastEntry == null ? zeroEntry : lastEntry;
+    }
+
+    @Override
+    public long append(LogEntry logEntry) {
+        try{
+            this.storeWriteLock.lock();
+            this.indexFile.seek(this.indexFile.length());
+            long dataFileLength = this.dataFile.length();
+            this.indexFile.writeLong(dataFileLength);
+            this.dataFile.seek(dataFileLength);
+            ByteBuffer buffer = ByteBuffer.allocate(Long.BYTES + 1 + logEntry.getValue().length);
+            buffer.putLong(logEntry.getTerm());
+            buffer.put(logEntry.getValueType().toByte());
+            buffer.put(logEntry.getValue());
+            this.dataFile.write(buffer.array());
+            this.entriesInStore += 1;
+            this.buffer.append(logEntry);
+            return this.entriesInStore + this.startIndex - 1;
+        }catch(IOException exception){
+            this.logger.error("failed to append a log entry to store", exception);
+            throw new RuntimeException(exception.getMessage(), exception);
+        }finally{
+            this.storeWriteLock.unlock();
+        }
     }
 
     /**
@@ -93,13 +138,12 @@ public class FileBasedSequentialLogStore implements SequentialLogStore {
      * @param logEntry
      */
     @Override
-    public synchronized void writeAt(long logIndex, LogEntry logEntry) {
-        if(logIndex < this.startIndex){
-            throw new IllegalArgumentException("logIndex out of range");
-        }
+    public void writeAt(long logIndex, LogEntry logEntry) {
+        this.throwWhenNotInRange(logIndex);
 
-        long index = logIndex - this.startIndex + 1; //start index is one based
         try{
+            this.storeWriteLock.lock();
+            long index = logIndex - this.startIndex + 1; //start index is one based
             ByteBuffer buffer = ByteBuffer.allocate(Long.BYTES + 1 + logEntry.getValue().length);
             buffer.putLong(logEntry.getTerm());
             buffer.put(logEntry.getValueType().toByte());
@@ -128,48 +172,67 @@ public class FileBasedSequentialLogStore implements SequentialLogStore {
                 this.dataFile.setLength(this.dataFile.getFilePointer());
             }
 
+            if(index <= this.entriesInStore){
+                this.buffer.trim(logIndex);
+            }
+            
+            this.buffer.append(logEntry);
             this.entriesInStore = index;
-            this.lastEntry = logEntry;
         }catch(IOException exception){
-            this.logger.error("failed to append a log entry to store", exception);
+            this.logger.error("failed to write a log entry at a specific index to store", exception);
             throw new RuntimeException(exception.getMessage(), exception);
+        }finally{
+            this.storeWriteLock.unlock();
         }
     }
 
     @Override
-    public synchronized LogEntry[] getLogEntries(long startIndex, long endIndex) {
-        if(startIndex < this.startIndex){
-            throw new IllegalArgumentException("startIndex out of range");
-        }
+    public LogEntry[] getLogEntries(long startIndex, long endIndex) {
+        this.throwWhenNotInRange(startIndex);
 
-        long start = startIndex - this.startIndex + 1;
-        long end = endIndex - this.startIndex + 1;
-        long adjustedEnd = end > this.entriesInStore + 1 ? this.entriesInStore + 1 : end;
-        if(adjustedEnd == this.entriesInStore + 1 && start == this.entriesInStore){
-            return new LogEntry[] { this.lastEntry };
+        // start and adjustedEnd are zero based, targetEndIndex is this.startIndex based
+        long start, adjustedEnd, targetEndIndex;
+        try{
+            this.storeReadLock.lock();
+            start = startIndex - this.startIndex;
+            adjustedEnd = endIndex - this.startIndex;
+            adjustedEnd = adjustedEnd > this.entriesInStore ? this.entriesInStore : adjustedEnd;
+            targetEndIndex = endIndex > this.entriesInStore + this.startIndex + 1 ? this.entriesInStore + this.startIndex + 1 : endIndex;
+        }finally{
+            this.storeReadLock.unlock();
         }
+        
         try{
             LogEntry[] entries = new LogEntry[(int)(adjustedEnd - start)];
             if(entries.length == 0){
                 return entries;
             }
 
-            if(adjustedEnd == this.entriesInStore + 1){
-                entries[entries.length - 1] = this.lastEntry;
-                adjustedEnd -= 1;
-            }
-
-            int entriesToRead = (int)(adjustedEnd - start);
-            this.indexFile.seek((start - 1) * Long.BYTES);
-            long dataStart = this.indexFile.readLong();
-            for(int i = 0; i < entriesToRead; ++i){
-                long dataEnd = this.indexFile.readLong();
-                int dataSize = (int)(dataEnd - dataStart);
-                byte[] logData = new byte[dataSize];
-                this.dataFile.seek(dataStart);
-                this.read(this.dataFile, logData);
-                entries[i] = new LogEntry(BinaryUtils.bytesToLong(logData, 0), Arrays.copyOfRange(logData, Long.BYTES + 1, logData.length), LogValueType.fromByte(logData[Long.BYTES]));
-                dataStart = dataEnd;
+            // fill with buffer
+            long bufferFirstIndex = this.buffer.fill(startIndex, targetEndIndex, entries);
+            
+            // Assumption: buffer.lastIndex() == this.entriesInStore + this.startIndex
+            // (Yes, for sure, we need to enforce this assumption to be true)
+            if(startIndex < bufferFirstIndex){
+                // in this case, we need to read from store file
+                try{
+                    // we need to move the file pointer
+                    this.storeWriteLock.lock();
+                    long end = bufferFirstIndex - this.startIndex;
+                    this.indexFile.seek(start * Long.BYTES);
+                    long dataStart = this.indexFile.readLong();
+                    for(int i = 0; i < (int)(end - start); ++i){
+                        long dataEnd = this.indexFile.readLong();
+                        int dataSize = (int)(dataEnd - dataStart);
+                        byte[] logData = new byte[dataSize];
+                        this.dataFile.seek(dataStart);
+                        this.read(this.dataFile, logData);
+                        entries[i] = new LogEntry(BinaryUtils.bytesToLong(logData, 0), Arrays.copyOfRange(logData, Long.BYTES + 1, logData.length), LogValueType.fromByte(logData[Long.BYTES]));
+                        dataStart = dataEnd;
+                    }
+                }finally{
+                    this.storeWriteLock.unlock();
+                }
             }
 
             return entries;
@@ -180,22 +243,21 @@ public class FileBasedSequentialLogStore implements SequentialLogStore {
     }
 
     @Override
-    public synchronized LogEntry getLogEntryAt(long logIndex) {
-        if(logIndex < this.startIndex){
-            this.logger.error(String.format("startIndex is %d, while index at %d is requested", this.startIndex, logIndex));
-            throw new IllegalArgumentException("logIndex out of range");
-        }
+    public LogEntry getLogEntryAt(long logIndex) {
+        this.throwWhenNotInRange(logIndex);
 
         long index = logIndex - this.startIndex + 1;
         if(index > this.entriesInStore){
             return null;
         }
 
-        if(index == this.entriesInStore){
-            return this.lastEntry;
-        }
-
         try{
+            LogEntry entry = this.buffer.entryAt(logIndex);
+            if(entry != null){
+                return entry;
+            }
+            
+            this.storeWriteLock.lock();
             long indexPosition = (index - 1) * Long.BYTES;
             this.indexFile.seek(indexPosition);
             long dataPosition = this.indexFile.readLong();
@@ -207,23 +269,26 @@ public class FileBasedSequentialLogStore implements SequentialLogStore {
         }catch(IOException exception){
             this.logger.error("failed to read files to get the specified entry");
             throw new RuntimeException(exception.getMessage(), exception);
+        }finally{
+            if(this.storeWriteLock.isHeldByCurrentThread()){
+                this.storeWriteLock.unlock();
+            }
         }
     }
 
     @Override
-    public synchronized byte[] packLog(long logIndex, int itemsToPack){
-        if(logIndex < this.startIndex){
-            throw new IllegalArgumentException("logIndex out of range");
-        }
-
-        long index = logIndex - this.startIndex + 1;
-        if(index > this.entriesInStore){
-            return new byte[0];
-        }
-
-        long endIndex = Math.min(index + itemsToPack, this.entriesInStore + 1);
-        boolean readToEnd = (endIndex == this.entriesInStore + 1);
+    public byte[] packLog(long logIndex, int itemsToPack){
+        this.throwWhenNotInRange(logIndex);
+        
         try{
+            this.storeWriteLock.lock();
+            long index = logIndex - this.startIndex + 1;
+            if(index > this.entriesInStore){
+                return new byte[0];
+            }
+
+            long endIndex = Math.min(index + itemsToPack, this.entriesInStore + 1);
+            boolean readToEnd = (endIndex == this.entriesInStore + 1);
             long indexPosition = (index - 1) * Long.BYTES;
             this.indexFile.seek(indexPosition);
             byte[] indexBuffer = new byte[(int)(Long.BYTES * (endIndex - index))];
@@ -250,17 +315,18 @@ public class FileBasedSequentialLogStore implements SequentialLogStore {
         }catch(IOException exception){
             this.logger.error("failed to read files to read data for packing");
             throw new RuntimeException(exception.getMessage(), exception);
+        }finally{
+            this.storeWriteLock.unlock();
         }
     }
 
     @Override
-    public synchronized void applyLogPack(long logIndex, byte[] logPack){
-        if(logIndex < this.startIndex){
-            throw new IllegalArgumentException("logIndex out of range");
-        }
+    public void applyLogPack(long logIndex, byte[] logPack){
+        this.throwWhenNotInRange(logIndex);
 
-        long index = logIndex - this.startIndex + 1;
         try{
+            this.storeWriteLock.lock();
+            long index = logIndex - this.startIndex + 1;
             ByteArrayInputStream memoryStream = new ByteArrayInputStream(logPack);
             GZIPInputStream gzipStream = new GZIPInputStream(memoryStream);
             byte[] sizeBuffer = new byte[Integer.BYTES];
@@ -290,48 +356,43 @@ public class FileBasedSequentialLogStore implements SequentialLogStore {
             this.dataFile.setLength(this.dataFile.getFilePointer());
             this.entriesInStore = index - 1 + indexBuffer.length / Long.BYTES;
             gzipStream.close();
-            this.loadLastEntry();
+            this.buffer.reset(this.entriesInStore > this.bufferSize ? this.entriesInStore + this.startIndex - this.bufferSize : this.startIndex);
+            this.fillBuffer();
         }catch(IOException exception){
             this.logger.error("failed to write files to unpack logs for data");
             throw new RuntimeException(exception.getMessage(), exception);
+        }finally{
+            this.storeWriteLock.unlock();
         }
     }
 
     @Override
-    public synchronized boolean compact(long lastLogIndex){
-        if(lastLogIndex < this.startIndex){
-            throw new IllegalArgumentException("lastLogIndex out of range");
-        }
+    public boolean compact(long lastLogIndex){
+        this.throwWhenNotInRange(lastLogIndex);
 
-        this.backup();
-        long lastIndex = lastLogIndex - this.startIndex;
-        if(lastLogIndex >= this.getFirstAvailableIndex() - 1){
-            try{
+        try{
+            this.storeWriteLock.lock();
+            this.backup();
+            long lastIndex = lastLogIndex - this.startIndex;
+            if(lastLogIndex >= this.getFirstAvailableIndex() - 1){
                 this.indexFile.setLength(0);
                 this.dataFile.setLength(0);
                 this.startIndexFile.seek(0);
                 this.startIndexFile.writeLong(lastLogIndex + 1);
                 this.startIndex = lastLogIndex + 1;
                 this.entriesInStore = 0;
-                this.lastEntry = null;
+                this.buffer.reset(lastLogIndex + 1);
                 return true;
-            }catch(Exception e){
-                this.logger.error("failed to remove data or save the start index", e);
-                this.restore();
-                return false;
-            }
-        }else{
-            long dataPosition = -1;
-            long indexPosition = Long.BYTES * (lastIndex + 1);
-            byte[] dataPositionBuffer = new byte[Long.BYTES];
-
-            try{
+            }else{
+                long dataPosition = -1;
+                long indexPosition = Long.BYTES * (lastIndex + 1);
+                byte[] dataPositionBuffer = new byte[Long.BYTES];
                 this.indexFile.seek(indexPosition);
                 this.read(this.indexFile, dataPositionBuffer);
                 dataPosition = ByteBuffer.wrap(dataPositionBuffer).getLong();
                 long indexFileNewLength = this.indexFile.length() - indexPosition;
                 long dataFileNewLength = this.dataFile.length() - dataPosition;
-
+    
                 // copy the log data
                 RandomAccessFile backupFile = new RandomAccessFile(this.logContainer.resolve(LOG_STORE_FILE_BAK).toString(), "r");
                 FileChannel backupChannel = backupFile.getChannel();
@@ -340,7 +401,7 @@ public class FileBasedSequentialLogStore implements SequentialLogStore {
                 channel.transferFrom(backupChannel, 0, dataFileNewLength);
                 this.dataFile.setLength(dataFileNewLength);
                 backupFile.close();
-
+    
                 // copy the index data
                 backupFile = new RandomAccessFile(this.logContainer.resolve(LOG_INDEX_FILE_BAK).toString(), "r");
                 backupFile.seek(indexPosition);
@@ -348,31 +409,49 @@ public class FileBasedSequentialLogStore implements SequentialLogStore {
                 for(int i = 0; i < indexFileNewLength / Long.BYTES; ++i){
                     this.indexFile.writeLong(backupFile.readLong() - dataPosition);
                 }
-
+    
                 this.indexFile.setLength(indexFileNewLength);
                 backupFile.close();
-
+    
                 // save the starting index
                 this.startIndexFile.seek(0);
                 this.startIndexFile.write(ByteBuffer.allocate(Long.BYTES).putLong(lastLogIndex + 1).array());
                 this.entriesInStore -= (lastLogIndex - this.startIndex + 1);
                 this.startIndex = lastLogIndex + 1;
+                this.buffer.reset(this.entriesInStore > this.bufferSize ? this.entriesInStore + this.startIndex - this.bufferSize : this.startIndex);
+                this.fillBuffer();
                 return true;
-            }catch(Throwable error){
-                this.logger.error("fail to compact the logs due to error", error);
-                this.restore();
-                return false;
             }
+        }catch(Throwable error){
+            this.logger.error("fail to compact the logs due to error", error);
+            this.restore();
+            return false;
+        }finally{
+            this.storeWriteLock.unlock();
         }
     }
 
     public void close(){
         try{
+            this.storeWriteLock.lock();
             this.dataFile.close();
             this.indexFile.close();
             this.startIndexFile.close();
         }catch(IOException exception){
             this.logger.error("failed to close data/index file(s)", exception);
+        }finally{
+            this.storeWriteLock.unlock();
+        }
+    }
+    
+    private void throwWhenNotInRange(long index){
+        try{
+            this.storeReadLock.lock();
+            if(index < this.startIndex){
+                throw new IllegalArgumentException("logIndex out of range");
+            }
+        }finally{
+            this.storeReadLock.unlock();
         }
     }
 
@@ -444,24 +523,179 @@ public class FileBasedSequentialLogStore implements SequentialLogStore {
         }
     }
 
-    private void loadLastEntry() throws IOException{
-        long lastEntryIndex = 0;
-        if(this.indexFile.length() > 0){
-            this.indexFile.seek(this.indexFile.length() - Long.BYTES);
-            byte[] indexBuffer = new byte[Long.BYTES];
-            this.read(this.indexFile, indexBuffer);
-            lastEntryIndex = BinaryUtils.bytesToLong(indexBuffer, 0);
+    private void fillBuffer() throws IOException{
+        long startIndex = this.buffer.firstIndex();
+        long indexFileSize = this.indexFile.length();
+        if(indexFileSize > 0){
+            long indexPosition = (startIndex - this.startIndex) * Long.BYTES;
+            this.indexFile.seek(indexPosition);
+            byte[] indexData = new byte[(int)(indexFileSize - indexPosition)];
+            this.read(this.indexFile, indexData);
+            ByteBuffer indexBuffer = ByteBuffer.wrap(indexData);
+            long dataStart = indexBuffer.getLong();
+            this.dataFile.seek(dataStart);
+            while(indexBuffer.hasRemaining()){
+                long dataEnd = indexBuffer.getLong();
+                this.buffer.append(this.readEntry((int)(dataEnd - dataStart)));
+                dataStart = dataEnd;
+            }
+            
+            // a little ugly, load last entry into buffer
+            long dataEnd = this.dataFile.length();
+            this.buffer.append(this.readEntry((int)(dataEnd - dataStart)));
         }
+    }
+    
+    private LogEntry readEntry(int size){
+        byte[] entryData = new byte[size];
+        this.read(this.dataFile, entryData);
+        ByteBuffer entryBuffer = ByteBuffer.wrap(entryData);
+        long term = entryBuffer.getLong();
+        byte valueType = entryBuffer.get();
+        return new LogEntry(term, Arrays.copyOfRange(entryData, Long.BYTES + 1, entryData.length), LogValueType.fromByte(valueType));
+    }
+    
+    public static class LogBuffer{
 
-        if(this.dataFile.length() > 0){
-            this.dataFile.seek(lastEntryIndex);
-            int lastEntrySize = (int)(this.dataFile.length() - lastEntryIndex);
-            if(lastEntrySize > 0){
-                byte[] lastEntryBuffer = new byte[lastEntrySize];
-                this.read(this.dataFile, lastEntryBuffer);
-                long term = BinaryUtils.bytesToLong(lastEntryBuffer, 0);
-                byte valueType = lastEntryBuffer[Long.BYTES];
-                this.lastEntry = new LogEntry(term, Arrays.copyOfRange(lastEntryBuffer, Long.BYTES + 1, lastEntrySize), LogValueType.fromByte(valueType));
+        private List<LogEntry> buffer;
+        private ReentrantReadWriteLock bufferLock;
+        private ReadLock bufferReadLock;
+        private WriteLock bufferWriteLock;
+        private long startIndex;
+        private int maxSize;
+        
+        public LogBuffer(long startIndex, int maxSize){
+            this.startIndex = startIndex;
+            this.maxSize = maxSize;
+            this.bufferLock = new ReentrantReadWriteLock();
+            this.bufferReadLock = this.bufferLock.readLock();
+            this.bufferWriteLock = this.bufferLock.writeLock();
+            this.buffer = new ArrayList<LogEntry>();
+        }
+        
+        public long lastIndex(){
+            try{
+                this.bufferReadLock.lock();
+                return this.startIndex + this.buffer.size();
+            }finally{
+                this.bufferReadLock.unlock();
+            }
+        }
+        
+        public long firstIndex(){
+            try{
+                this.bufferReadLock.lock();
+                return this.startIndex;
+            }finally{
+                this.bufferReadLock.unlock();
+            }
+        }
+        
+        public LogEntry lastEntry(){
+            try{
+                this.bufferReadLock.lock();
+                if(this.buffer.size() > 0){
+                    return this.buffer.get(this.buffer.size() - 1);
+                }
+                
+                return null;
+            }finally{
+                this.bufferReadLock.unlock();
+            }
+        }
+        
+        public LogEntry entryAt(long index){
+            try{
+                this.bufferReadLock.lock();
+                int indexWithinBuffer = (int)(index - this.startIndex);
+                if(indexWithinBuffer >= this.buffer.size() || indexWithinBuffer < 0){
+                    return null;
+                }
+                
+                return this.buffer.get(indexWithinBuffer);
+            }finally{
+                this.bufferReadLock.unlock();
+            }
+        }
+        
+        // [start, end), returns the startIndex
+        public long fill(long start, long end, LogEntry[] result){
+            try{
+                this.bufferReadLock.lock();
+                if(end < this.startIndex){
+                    return this.startIndex;
+                }
+                
+                int offset = (int)(start - this.startIndex);
+                if(offset > 0){
+                    for(int i = 0; i < (int)(end - start); ++i, ++offset){
+                        result[i] = this.buffer.get(offset);
+                    }
+                }else{
+                    offset *= -1;
+                    for(int i = 0; i < (int)(end - this.startIndex); ++i, ++offset){
+                        result[offset] = this.buffer.get(i);
+                    }
+                }
+                
+                return this.startIndex;
+            }finally{
+                this.bufferReadLock.unlock();
+            }
+        }
+        
+        // trimming the buffer [fromIndex, end)
+        public void trim(long fromIndex){
+            try{
+                this.bufferWriteLock.lock();
+                int index = (int)(fromIndex - this.startIndex);
+                if(index < this.buffer.size()){
+                    this.buffer.subList(index, this.buffer.size()).clear();
+                }
+            }finally{
+                this.bufferWriteLock.unlock();
+            }
+        }
+        
+        // trimming the buffer [fromIndex, endIndex)
+        public void trim(long fromIndex, long endIndex){
+            try{
+                this.bufferWriteLock.lock();
+                int index = (int)(fromIndex - this.startIndex);
+                int end = (int)(endIndex - this.startIndex);
+                if(index < this.buffer.size()){
+                    this.buffer.subList(index, end).clear();
+                }
+                
+                // we may need to reset the start index
+                if(fromIndex == this.startIndex){
+                    this.startIndex = endIndex > this.startIndex + end ? this.startIndex + end : endIndex;
+                }
+            }finally{
+                this.bufferWriteLock.unlock();
+            }
+        }
+        
+        public void append(LogEntry entry){
+            try{
+                this.bufferWriteLock.lock();
+                this.buffer.add(entry);
+                if(this.maxSize < this.buffer.size()){
+                    this.buffer.remove(0);
+                    this.startIndex += 1;
+                }
+            }finally{
+                this.bufferWriteLock.unlock();
+            }
+        }
+        
+        public void reset(long startIndex){
+            try{
+                this.bufferWriteLock.lock();
+                this.buffer.clear();
+                this.startIndex = startIndex;
+            }finally{
+                this.bufferWriteLock.unlock();
             }
         }
     }

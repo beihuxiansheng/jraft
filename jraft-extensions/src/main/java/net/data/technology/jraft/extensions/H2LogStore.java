@@ -106,7 +106,7 @@ public class H2LogStore implements SequentialLogStore {
     }
 
     @Override
-    public void append(LogEntry logEntry) {
+    public long append(LogEntry logEntry) {
         try{
             PreparedStatement ps = this.connection.prepareStatement(INSERT_ENTRY_SQL);
             ps.setLong(1, logEntry.getTerm());
@@ -114,8 +114,8 @@ public class H2LogStore implements SequentialLogStore {
             ps.setBytes(3, logEntry.getValue());
             ps.execute();
             this.connection.commit();
-            this.nextIndex.incrementAndGet();
             this.lastEntry = logEntry;
+            return this.nextIndex.getAndIncrement();
         }catch(Throwable error){
             this.logger.error("failed to insert a new entry", error);
             throw new RuntimeException("log store error", error);

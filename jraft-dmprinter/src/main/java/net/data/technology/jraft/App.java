@@ -35,7 +35,7 @@ public class App
             return;
         }
 
-        ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(Runtime.getRuntime().availableProcessors());
+        ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(Runtime.getRuntime().availableProcessors() * 2);
         if("dummy".equalsIgnoreCase(args[0])){
             executeInDummyMode(args[1], executor);
             return;

@@ -111,7 +111,7 @@ public class RaftServer implements RaftMessageHandler {
     }
 
     @Override
-    public synchronized RaftResponseMessage processRequest(RaftRequestMessage request) {
+    public RaftResponseMessage processRequest(RaftRequestMessage request) {
         this.logger.debug(
                 "Receive a %s message from %d with LastLogIndex=%d, LastLogTerm=%d, EntriesLength=%d, CommitIndex=%d and Term=%d",
                 request.getMessageType().toString(),
@@ -121,17 +121,6 @@ public class RaftServer implements RaftMessageHandler {
                 request.getLogEntries() == null ? 0 : request.getLogEntries().length,
                 request.getCommitIndex(),
                 request.getTerm());
-        if(request.getMessageType() == RaftMessageType.AppendEntriesRequest
-            || request.getMessageType() == RaftMessageType.RequestVoteRequest
-            || request.getMessageType() == RaftMessageType.InstallSnapshotRequest){
-            // we allow the server to be continue after term updated to save a round message
-            this.updateTerm(request.getTerm());
-
-            // Reset stepping down value to prevent this server goes down when leader crashes after sending a LeaveClusterRequest
-            if(this.steppingDown > 0){
-                this.steppingDown = 2;
-            }
-        }
 
         RaftResponseMessage response = null;
         if(request.getMessageType() == RaftMessageType.AppendEntriesRequest){
@@ -158,7 +147,15 @@ public class RaftServer implements RaftMessageHandler {
         return response;
     }
 
-    private RaftResponseMessage handleAppendEntriesRequest(RaftRequestMessage request){
+    private synchronized RaftResponseMessage handleAppendEntriesRequest(RaftRequestMessage request){
+        // we allow the server to be continue after term updated to save a round message
+        this.updateTerm(request.getTerm());
+
+        // Reset stepping down value to prevent this server goes down when leader crashes after sending a LeaveClusterRequest
+        if(this.steppingDown > 0){
+            this.steppingDown = 2;
+        }
+        
         if(request.getTerm() == this.state.getTerm()){
             if(this.role == ServerRole.Candidate){
                 this.becomeFollower();
@@ -219,12 +216,12 @@ public class RaftServer implements RaftMessageHandler {
             // append the new log entries
             while(logIndex < logEntries.length){
                 LogEntry logEntry = logEntries[logIndex ++];
-                this.logStore.append(logEntry);
+                long indexForEntry = this.logStore.append(logEntry);
                 if(logEntry.getValueType() == LogValueType.Configuration){
                     ClusterConfiguration newConfig = ClusterConfiguration.fromBytes(logEntry.getValue());
                     this.reconfigure(newConfig);
                 }else{
-                    this.stateMachine.preCommit(this.logStore.getFirstAvailableIndex() - 1, logEntry.getValue());
+                    this.stateMachine.preCommit(indexForEntry, logEntry.getValue());
                 }
             }
         }
@@ -236,7 +233,15 @@ public class RaftServer implements RaftMessageHandler {
         return response;
     }
 
-    private RaftResponseMessage handleVoteRequest(RaftRequestMessage request){
+    private synchronized RaftResponseMessage handleVoteRequest(RaftRequestMessage request){
+        // we allow the server to be continue after term updated to save a round message
+        this.updateTerm(request.getTerm());
+
+        // Reset stepping down value to prevent this server goes down when leader crashes after sending a LeaveClusterRequest
+        if(this.steppingDown > 0){
+            this.steppingDown = 2;
+        }
+        
         RaftResponseMessage response = new RaftResponseMessage();
         response.setMessageType(RaftMessageType.RequestVoteResponse);
         response.setSource(this.id);
@@ -263,16 +268,21 @@ public class RaftServer implements RaftMessageHandler {
         response.setDestination(this.leader);
         response.setTerm(this.state.getTerm());
 
-        if(this.role != ServerRole.Leader){
-            response.setAccepted(false);
-            return response;
+        long term;
+        synchronized(this){
+            if(this.role != ServerRole.Leader){
+                response.setAccepted(false);
+                return response;
+            }
+            
+            term = this.state.getTerm();
         }
 
         LogEntry[] logEntries = request.getLogEntries();
         if(logEntries != null && logEntries.length > 0){
             for(int i = 0; i < logEntries.length; ++i){
-                this.logStore.append(new LogEntry(this.state.getTerm(), logEntries[i].getValue()));
-                this.stateMachine.preCommit(this.logStore.getFirstAvailableIndex() - 1, logEntries[i].getValue());
+                
+                this.stateMachine.preCommit(this.logStore.append(new LogEntry(term, logEntries[i].getValue())), logEntries[i].getValue());
             }
         }
 
@@ -828,7 +838,7 @@ public class RaftServer implements RaftMessageHandler {
         this.config = newConfig;
     }
 
-    private RaftResponseMessage handleExtendedMessages(RaftRequestMessage request){
+    private synchronized RaftResponseMessage handleExtendedMessages(RaftRequestMessage request){
         if(request.getMessageType() == RaftMessageType.AddServerRequest){
             return this.handleAddServerRequest(request);
         }else if(request.getMessageType() == RaftMessageType.RemoveServerRequest){
@@ -850,6 +860,14 @@ public class RaftServer implements RaftMessageHandler {
     }
 
     private RaftResponseMessage handleInstallSnapshotRequest(RaftRequestMessage request){
+        // we allow the server to be continue after term updated to save a round message
+        this.updateTerm(request.getTerm());
+
+        // Reset stepping down value to prevent this server goes down when leader crashes after sending a LeaveClusterRequest
+        if(this.steppingDown > 0){
+            this.steppingDown = 2;
+        }
+        
         if(request.getTerm() == this.state.getTerm() && !this.catchingUp){
             if(this.role == ServerRole.Candidate){
                 this.becomeFollower();
