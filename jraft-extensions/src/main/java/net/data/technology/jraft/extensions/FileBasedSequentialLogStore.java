@@ -246,17 +246,23 @@ public class FileBasedSequentialLogStore implements SequentialLogStore {
     public LogEntry getLogEntryAt(long logIndex) {
         this.throwWhenNotInRange(logIndex);
 
-        long index = logIndex - this.startIndex + 1;
-        if(index > this.entriesInStore){
-            return null;
+        long index = 0;
+        try{
+            this.storeReadLock.lock();
+            index = logIndex - this.startIndex + 1;
+            if(index > this.entriesInStore){
+                return null;
+            }
+        }finally{
+            this.storeReadLock.unlock();
         }
 
+        LogEntry entry = this.buffer.entryAt(logIndex);
+        if(entry != null){
+            return entry;
+        }
+        
         try{
-            LogEntry entry = this.buffer.entryAt(logIndex);
-            if(entry != null){
-                return entry;
-            }
-            
             this.storeWriteLock.lock();
             long indexPosition = (index - 1) * Long.BYTES;
             this.indexFile.seek(indexPosition);
@@ -270,9 +276,7 @@ public class FileBasedSequentialLogStore implements SequentialLogStore {
             this.logger.error("failed to read files to get the specified entry");
             throw new RuntimeException(exception.getMessage(), exception);
         }finally{
-            if(this.storeWriteLock.isHeldByCurrentThread()){
-                this.storeWriteLock.unlock();
-            }
+            this.storeWriteLock.unlock();
         }
     }
 
