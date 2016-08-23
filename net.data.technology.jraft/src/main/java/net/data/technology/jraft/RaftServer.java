@@ -83,11 +83,29 @@ public class RaftServer implements RaftMessageHandler {
             this.state.setCommitIndex(0);
         }
 
-        // try to load uncommitted, no need to check snapshots
+        /**
+         * I found this implementation is also a victim of bug https://groups.google.com/forum/#!topic/raft-dev/t4xj6dJTP6E
+         * As the implementation is based on Diego's thesis
+         * Fix:
+         * We should never load configurations that is not committed, 
+         *   this prevents an old server from replicating an obsoleted config to other servers
+         * The prove is as below:
+         * Assume S0 is the last committed server set for the old server A
+         * |- EXITS Log l which has been committed but l !BELONGS TO A.logs =>  Vote(A) < Majority(S0)
+         * In other words, we need to prove that A cannot be elected to leader if any logs/configs has been committed.
+         * Case #1, There is no configuration change since S0, then it's obvious that Vote(A) < Majority(S0), see the core Algorithm
+         * Case #2, There are one or more configuration changes since S0, then at the time of first configuration change was committed, 
+         *      there are at least Majority(S0 - 1) servers committed the configuration change
+         *      Majority(S0 - 1) + Majority(S0) > S0 => Vote(A) < Majority(S0)
+         * -|
+         */
+
+        //try to see if there is an uncommitted configuration change, since we cannot allow two configuration changes at a time
         for(long i = Math.max(this.state.getCommitIndex() + 1, this.logStore.getStartIndex()); i < this.logStore.getFirstAvailableIndex(); ++i){
             LogEntry logEntry = this.logStore.getLogEntryAt(i);
             if(logEntry.getValueType() == LogValueType.Configuration){
-                this.config = ClusterConfiguration.fromBytes(logEntry.getValue());
+                this.logger.info("detect a configuration change that is not committed yet at index %d", i);
+                this.configChanging = true;
                 break;
             }
         }
@@ -219,6 +237,8 @@ public class RaftServer implements RaftMessageHandler {
                 long indexForEntry = this.logStore.append(logEntry);
                 if(logEntry.getValueType() == LogValueType.Configuration){
                     ClusterConfiguration newConfig = ClusterConfiguration.fromBytes(logEntry.getValue());
+                    this.logger.info("received a configuration change at index %d from leader", newConfig.getLogIndex());
+                    this.configChanging = true;
                     this.reconfigure(newConfig);
                 }else{
                     this.stateMachine.preCommit(indexForEntry, logEntry.getValue());
@@ -296,7 +316,13 @@ public class RaftServer implements RaftMessageHandler {
     private synchronized void handleElectionTimeout(){
         if(this.steppingDown > 0){
             if(--this.steppingDown == 0){
-                this.logger.info("no hearing further news from leader, step down");
+                this.logger.info("no hearing further news from leader, remove this server from config and step down");
+                ClusterServer server = this.config.getServer(this.id);
+                if(server != null){
+                    this.config.getServers().remove(server);
+                    this.context.getServerStateManager().saveClusterConfiguration(this.config);
+                }
+                
                 System.exit(0);
                 return;
             }
@@ -596,6 +622,8 @@ public class RaftServer implements RaftMessageHandler {
         if(this.config.getLogIndex() == 0){
             this.config.setLogIndex(this.logStore.getFirstAvailableIndex());
             this.logStore.append(new LogEntry(this.state.getTerm(), this.config.toBytes(), LogValueType.Configuration));
+            this.logger.info("add initial configuration to log store");
+            this.configChanging = true;
         }
 
         this.requestAppendEntries();
@@ -1101,7 +1129,7 @@ public class RaftServer implements RaftMessageHandler {
             return response;
         }
 
-        if(this.configChanging || this.config.getLogIndex() == 0 || this.config.getLogIndex() > this.state.getCommitIndex()){
+        if(this.configChanging){
             // the previous config has not committed yet
             this.logger.info("previous config has not committed yet");
             return response;
@@ -1119,7 +1147,6 @@ public class RaftServer implements RaftMessageHandler {
             return response;
         }
 
-        this.configChanging = true;
         RaftRequestMessage leaveClusterRequest = new RaftRequestMessage();
         leaveClusterRequest.setCommitIndex(this.quickCommitIndex);
         leaveClusterRequest.setDestination(peer.getId());
@@ -1160,13 +1187,12 @@ public class RaftServer implements RaftMessageHandler {
             return response;
         }
 
-        if(this.configChanging || this.config.getLogIndex() == 0 || this.config.getLogIndex() > this.state.getCommitIndex()){
+        if(this.configChanging){
             // the previous config has not committed yet
             this.logger.info("previous config has not committed yet");
             return response;
         }
 
-        this.configChanging = true;
         this.serverToJoin = new PeerServer(server, this.context, peerServer -> {
             this.handleHeartbeatTimeout(peerServer);
         });
@@ -1224,7 +1250,7 @@ public class RaftServer implements RaftMessageHandler {
             this.peers.put(this.serverToJoin.getId(), this.serverToJoin);
             this.enableHeartbeatForPeer(this.serverToJoin);
             this.serverToJoin = null;
-            this.configChanging = false;
+            this.configChanging = true;
             this.requestAppendEntries();
             return;
         }
@@ -1305,14 +1331,19 @@ public class RaftServer implements RaftMessageHandler {
     }
 
     private RaftResponseMessage handleLeaveClusterRequest(RaftRequestMessage request){
-        this.steppingDown = 2;
         RaftResponseMessage response = new RaftResponseMessage();
         response.setSource(this.id);
         response.setDestination(request.getSource());
         response.setTerm(this.state.getTerm());
         response.setMessageType(RaftMessageType.LeaveClusterResponse);
         response.setNextIndex(this.logStore.getFirstAvailableIndex());
-        response.setAccepted(true);
+        if(!this.configChanging){
+            this.steppingDown = 2;
+            response.setAccepted(true);
+        }else{
+            response.setAccepted(false);
+        }
+        
         return response;
     }
 
@@ -1333,7 +1364,8 @@ public class RaftServer implements RaftMessageHandler {
             }
         }
 
-        this.configChanging = false;
+        this.logger.info("removed a server from configuration and save the configuration to log store at %d", newConfig.getLogIndex());
+        this.configChanging = true;
         this.logStore.append(new LogEntry(this.state.getTerm(), newConfig.toBytes(), LogValueType.Configuration));
         this.config = newConfig;
         this.requestAppendEntries();
@@ -1543,8 +1575,15 @@ public class RaftServer implements RaftMessageHandler {
                             server.stateMachine.commit(currentCommitIndex, logEntry.getValue());
                         }else if(logEntry.getValueType() == LogValueType.Configuration){
                             synchronized(server){
-                                server.context.getServerStateManager().saveClusterConfiguration(server.config);
-                                if(server.catchingUp && server.config.getServer(server.id) != null){
+                                ClusterConfiguration newConfig = ClusterConfiguration.fromBytes(logEntry.getValue());
+                                server.logger.info("configuration at index %d is committed", newConfig.getLogIndex());
+                                server.context.getServerStateManager().saveClusterConfiguration(newConfig);
+                                server.configChanging = false;
+                                if(server.config.getLogIndex() < newConfig.getLogIndex()){
+                                    server.reconfigure(newConfig);
+                                }
+                                
+                                if(server.catchingUp && newConfig.getServer(server.id) != null){
                                     server.logger.info("this server is committed as one of cluster members");
                                     server.catchingUp = false;
                                 }

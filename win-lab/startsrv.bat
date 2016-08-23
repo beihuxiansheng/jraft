@@ -26,7 +26,7 @@ if not exist "%curdir%\server%1" (
     goto exit
 )
 
-start "server%1" /D "%curdir%\server%1" java -jar %curdir%\dmprinter.jar server "%curdir%\server%1" 800%1
+start "server%1" /D "%curdir%\server%1" java -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=600%1 -jar %curdir%\dmprinter.jar server "%curdir%\server%1" 800%1
 
 :exit
 @echo on
