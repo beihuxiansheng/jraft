@@ -1090,9 +1090,35 @@ public class RaftServer implements RaftMessageHandler {
             if(request.getMessageType() == RaftMessageType.SyncLogRequest || request.getMessageType() == RaftMessageType.JoinClusterRequest || request.getMessageType() == RaftMessageType.LeaveClusterRequest){
                 final PeerServer server = (request.getMessageType() == RaftMessageType.LeaveClusterRequest) ? this.peers.get(request.getDestination()) : this.serverToJoin;
                 if(server != null){
-                    if(server.getCurrentHeartbeatInterval() > this.context.getRaftParameters().getMaxHeartbeatInterval()){
+                    if(server.getCurrentHeartbeatInterval() >= this.context.getRaftParameters().getMaxHeartbeatInterval()){
                         if(request.getMessageType() == RaftMessageType.LeaveClusterRequest){
                             this.logger.info("rpc failed again for the removing server (%d), will remove this server directly", server.getId());
+                            
+                            /**
+                             * In case of there are only two servers in the cluster, it safe to remove the server directly from peers
+                             * as at most one config change could happen at a time
+                             *  prove:
+                             *      assume there could be two config changes at a time
+                             *      this means there must be a leader after previous leader offline, which is impossible 
+                             *      (no leader could be elected after one server goes offline in case of only two servers in a cluster)
+                             * so the bug https://groups.google.com/forum/#!topic/raft-dev/t4xj6dJTP6E 
+                             * does not apply to cluster which only has two members
+                             */
+                            if(this.peers.size() == 1){
+                                PeerServer peer = this.peers.get(server.getId());
+                                if(peer == null){
+                                    this.logger.info("peer %d cannot be found in current peer list", id);
+                                } else{
+                                    if(peer.getHeartbeatTask() != null){
+                                        peer.getHeartbeatTask().cancel(false);
+                                    }
+
+                                    peer.enableHeartbeat(false);
+                                    this.peers.remove(server.getId());
+                                    this.logger.info("server %d is removed from cluster", server.getId());
+                                }
+                            }
+                            
                             this.removeServerFromCluster(server.getId());
                         }else{
                             this.logger.info("rpc failed again for the new coming server (%d), will stop retry for this server", server.getId());
