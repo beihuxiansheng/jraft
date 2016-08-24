@@ -217,17 +217,12 @@ public class RaftServer implements RaftMessageHandler {
 
             // dealing with overwrites
             while(index < this.logStore.getFirstAvailableIndex() && logIndex < logEntries.length){
-                if(index <= this.config.getLogIndex()){
-                    // we need to restore the configuration from previous committed configuration
-                    ClusterConfiguration newConfig = this.context.getServerStateManager().loadClusterConfiguration();
-                    this.reconfigure(newConfig);
-                    this.logger.info("revert a previous config change to config at %d", this.config.getLogIndex());
-                    this.configChanging = false;
-                }
-
                 LogEntry oldEntry = this.logStore.getLogEntryAt(index);
                 if(oldEntry.getValueType() == LogValueType.Application){
                     this.stateMachine.rollback(index, oldEntry.getValue());
+                }else if(oldEntry.getValueType() == LogValueType.Configuration){
+                    this.logger.info("revert a previous config change to config at %d", this.config.getLogIndex());
+                    this.configChanging = false;
                 }
 
                 this.logStore.writeAt(index ++, logEntries[logIndex ++]);
@@ -238,10 +233,8 @@ public class RaftServer implements RaftMessageHandler {
                 LogEntry logEntry = logEntries[logIndex ++];
                 long indexForEntry = this.logStore.append(logEntry);
                 if(logEntry.getValueType() == LogValueType.Configuration){
-                    ClusterConfiguration newConfig = ClusterConfiguration.fromBytes(logEntry.getValue());
-                    this.logger.info("received a configuration change at index %d from leader", newConfig.getLogIndex());
+                    this.logger.info("received a configuration change at index %d from leader", indexForEntry);
                     this.configChanging = true;
-                    this.reconfigure(newConfig);
                 }else{
                     this.stateMachine.preCommit(indexForEntry, logEntry.getValue());
                 }
@@ -817,8 +810,6 @@ public class RaftServer implements RaftMessageHandler {
     }
 
     private void reconfigure(ClusterConfiguration newConfig){
-        // according to our design, the new configuration never send to a server that is removed
-        // so, in this method, we are not considering self get removed scenario
         this.logger.debug(
                 "system is reconfigured to have %d servers, last config index: %d, this config index: %d",
                 newConfig.getServers().size(),
@@ -837,20 +828,37 @@ public class RaftServer implements RaftMessageHandler {
                 serversRemoved.add(id);
             }
         }
+        
+        if(newConfig.getServer(this.id) == null){
+            serversRemoved.add(this.id);
+        }
 
         for(ClusterServer server : serversAdded){
             if(server.getId() != this.id){
                 PeerServer peer = new PeerServer(server, context, peerServer -> this.handleHeartbeatTimeout(peerServer));
+                peer.setNextLogIndex(this.logStore.getFirstAvailableIndex());
                 this.peers.put(server.getId(), peer);
                 this.logger.info("server %d is added to cluster", peer.getId());
                 if(this.role == ServerRole.Leader){
                     this.logger.info("enable heartbeating for server %d", peer.getId());
                     this.enableHeartbeatForPeer(peer);
+                    if(this.serverToJoin != null && this.serverToJoin.getId() == peer.getId()){
+                        peer.setNextLogIndex(this.serverToJoin.getNextLogIndex());
+                        this.serverToJoin = null;
+                    }
                 }
             }
         }
 
         for(Integer id : serversRemoved){
+            if(id == this.id && !this.catchingUp){
+                // this server is removed from cluster
+                this.context.getServerStateManager().saveClusterConfiguration(newConfig);
+                this.logger.info("server has been removed from cluster, step down");
+                System.exit(0);
+                return;
+            }
+            
             PeerServer peer = this.peers.get(id);
             if(peer == null){
                 this.logger.info("peer %d cannot be found in current peer list", id);
@@ -1248,10 +1256,6 @@ public class RaftServer implements RaftMessageHandler {
             newConfig.getServers().add(this.serverToJoin.getClusterConfig());
             LogEntry configEntry = new LogEntry(this.state.getTerm(), newConfig.toBytes(), LogValueType.Configuration);
             this.logStore.append(configEntry);
-            this.config = newConfig;
-            this.peers.put(this.serverToJoin.getId(), this.serverToJoin);
-            this.enableHeartbeatForPeer(this.serverToJoin);
-            this.serverToJoin = null;
             this.configChanging = true;
             this.requestAppendEntries();
             return;
@@ -1350,13 +1354,6 @@ public class RaftServer implements RaftMessageHandler {
     }
 
     private void removeServerFromCluster(int serverId){
-        PeerServer peer = this.peers.get(serverId);
-        if(peer.getHeartbeatTask() != null){
-            peer.getHeartbeatTask().cancel(false);
-        }
-
-        peer.enableHeartbeat(false);
-        this.peers.remove(serverId);
         ClusterConfiguration newConfig = new ClusterConfiguration();
         newConfig.setLastLogIndex(this.config.getLogIndex());
         newConfig.setLogIndex(this.logStore.getFirstAvailableIndex());
@@ -1369,7 +1366,6 @@ public class RaftServer implements RaftMessageHandler {
         this.logger.info("removed a server from configuration and save the configuration to log store at %d", newConfig.getLogIndex());
         this.configChanging = true;
         this.logStore.append(new LogEntry(this.state.getTerm(), newConfig.toBytes(), LogValueType.Configuration));
-        this.config = newConfig;
         this.requestAppendEntries();
     }
 
