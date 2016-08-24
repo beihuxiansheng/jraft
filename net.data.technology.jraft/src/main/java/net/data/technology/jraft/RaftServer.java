@@ -221,6 +221,8 @@ public class RaftServer implements RaftMessageHandler {
                     // we need to restore the configuration from previous committed configuration
                     ClusterConfiguration newConfig = this.context.getServerStateManager().loadClusterConfiguration();
                     this.reconfigure(newConfig);
+                    this.logger.info("revert a previous config change to config at %d", this.config.getLogIndex());
+                    this.configChanging = false;
                 }
 
                 LogEntry oldEntry = this.logStore.getLogEntryAt(index);
