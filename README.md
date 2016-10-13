@@ -1,6 +1,10 @@
 # jraft
 Yet another Raft consensus implementation
 
+## Project moved
+
+**Please be noted that this project is no longer maintained, I will not fix any bugs, neither have new features in this project anymore, however, I have found a team to take over this for me, the code has been re-organized and published at [jraft](https://github.com/datatechnology/jraft), the team will start from there and make it under Apache 2, nothing is changed, but better support and more features on it**
+
 The core algorithm is implemented based on the TLA+ spec, whose safety and liveness are proven.
 
 ## Supported Features,
