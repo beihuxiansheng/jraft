@@ -167,6 +167,7 @@ public class RaftServer implements RaftMessageHandler {
     }
 
     private synchronized RaftResponseMessage handleAppendEntriesRequest(RaftRequestMessage request){
+    	System.out.println("server " + this.id + " handleAppendEntriesRequest and request=" + request);
         // we allow the server to be continue after term updated to save a round message
         this.updateTerm(request.getTerm());
 
@@ -284,7 +285,7 @@ public class RaftServer implements RaftMessageHandler {
         response.setSource(this.id);
         response.setDestination(this.leader);
         response.setTerm(this.state.getTerm());
-
+        System.out.println("server " + this.id + " handleClientRequest and request=" + request);
         long term;
         synchronized(this){
             if(this.role != ServerRole.Leader){
