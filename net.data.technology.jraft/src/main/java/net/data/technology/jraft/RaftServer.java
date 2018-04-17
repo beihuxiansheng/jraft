@@ -355,6 +355,7 @@ public class RaftServer implements RaftMessageHandler {
 
         // restart the election timer if this is not yet a leader
         if(this.role != ServerRole.Leader){
+        	System.out.println("server " + this.id + " requestVote后还是没有变成leader......");
             this.restartElectionTimer();
         }
     }
