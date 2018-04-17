@@ -481,6 +481,7 @@ public class RaftServer implements RaftMessageHandler {
             }
 
             matchedIndexes.sort(indexComparator);
+            System.out.println("matchedIndexes="+matchedIndexes);
             this.commit(matchedIndexes.get((this.peers.size() + 1) / 2));
             needToCatchup = peer.clearPendingCommit() || response.getNextIndex() < this.logStore.getFirstAvailableIndex();
         }else{
@@ -680,6 +681,7 @@ public class RaftServer implements RaftMessageHandler {
     }
 
     private void commit(long targetIndex){
+    	System.out.println("节点 "+ this.id +" 开始commit了,targetIndex="+targetIndex);
         if(targetIndex > this.quickCommitIndex){
             this.quickCommitIndex = targetIndex;
 
