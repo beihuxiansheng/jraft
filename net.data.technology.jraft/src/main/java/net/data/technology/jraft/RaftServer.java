@@ -565,6 +565,7 @@ public class RaftServer implements RaftMessageHandler {
 
     private synchronized void handleHeartbeatTimeout(PeerServer peer){
         this.logger.debug("Heartbeat timeout for %d", peer.getId());
+        System.out.println("leader "+ this.id +" heartbeat timeout for " + peer.getId());
         if(this.role == ServerRole.Leader){
             this.requestAppendEntries(peer);
 
