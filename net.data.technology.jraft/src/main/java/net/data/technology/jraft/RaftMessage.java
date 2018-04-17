@@ -38,4 +38,11 @@ public class RaftMessage {
     public void setTerm(long term) {
         this.term = term;
     }
+
+	@Override
+	public String toString() {
+		return "RaftMessage [messageType=" + messageType + ", source=" + source + ", destination=" + destination
+				+ ", term=" + term + "]";
+	}
+    
 }

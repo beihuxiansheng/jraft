@@ -71,6 +71,7 @@ public class RaftServer implements RaftMessageHandler {
 
             @Override
             public Void call() throws Exception {
+            	System.out.println("server " + id + " 开始选举");
                 handleElectionTimeout();
                 return null;
             }};
@@ -379,6 +380,7 @@ public class RaftServer implements RaftMessageHandler {
             request.setLastLogIndex(this.logStore.getFirstAvailableIndex() - 1);
             request.setLastLogTerm(this.termForLastLog(this.logStore.getFirstAvailableIndex() - 1));
             request.setTerm(this.state.getTerm());
+            System.out.println("请求 " + peer.getId() + " 投票,request=" + request);
             this.logger.debug("send %s to server %d with term %d", RaftMessageType.RequestVoteRequest.toString(), peer.getId(), this.state.getTerm());
             peer.SendRequest(request).whenCompleteAsync((RaftResponseMessage response, Throwable error) -> {
                 handlePeerResponse(response, error);
@@ -605,6 +607,7 @@ public class RaftServer implements RaftMessageHandler {
         this.stopElectionTimer();
         this.role = ServerRole.Leader;
         this.leader = this.id;
+        System.out.println(leader + "成为leader");
         this.serverToJoin = null;
         for(PeerServer server : this.peers.values()){
             server.setNextLogIndex(this.logStore.getFirstAvailableIndex());

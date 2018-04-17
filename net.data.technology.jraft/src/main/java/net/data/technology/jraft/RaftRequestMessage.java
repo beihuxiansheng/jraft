@@ -1,5 +1,7 @@
 package net.data.technology.jraft;
 
+import java.util.Arrays;
+
 public class RaftRequestMessage extends RaftMessage {
 
     private long lastLogTerm;
@@ -38,4 +40,11 @@ public class RaftRequestMessage extends RaftMessage {
     public void setLogEntries(LogEntry[] logEntries) {
         this.logEntries = logEntries;
     }
+
+	@Override
+	public String toString() {
+		return "RaftRequestMessage [lastLogTerm=" + lastLogTerm + ", lastLogIndex=" + lastLogIndex + ", commitIndex="
+				+ commitIndex + ", logEntries=" + Arrays.toString(logEntries) + "]";
+	}
+    
 }
