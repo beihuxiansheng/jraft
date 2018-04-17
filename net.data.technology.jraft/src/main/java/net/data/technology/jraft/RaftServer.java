@@ -71,7 +71,7 @@ public class RaftServer implements RaftMessageHandler {
 
             @Override
             public Void call() throws Exception {
-            	System.out.println("server " + id + " 开始选举");
+            	System.out.println("server " + id + " 开始选举timeout");
                 handleElectionTimeout();
                 return null;
             }};
