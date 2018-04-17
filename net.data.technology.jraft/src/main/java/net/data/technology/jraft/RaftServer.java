@@ -615,6 +615,7 @@ public class RaftServer implements RaftMessageHandler {
     }
 
     private void becomeLeader(){
+    	System.out.println(leader + " 成为leader后，停止election timeout!!!");
         this.stopElectionTimer();
         this.role = ServerRole.Leader;
         this.leader = this.id;
