@@ -571,13 +571,16 @@ public class RaftServer implements RaftMessageHandler {
 
             synchronized(peer){
                 if(peer.isHeartbeatEnabled()){
+                	System.out.println("leader "+ this.id +" 再次进行heartbeat timeout for " + peer.getId());
                     // Schedule another heartbeat if heartbeat is still enabled
                     peer.setHeartbeatTask(this.context.getScheduledExecutor().schedule(peer.getHeartbeartHandler(), peer.getCurrentHeartbeatInterval(), TimeUnit.MILLISECONDS));
                 }else{
+                	System.out.println("leader "+ this.id +" 不再对  " + peer.getId() + " 进行心跳");
                     this.logger.debug("heartbeat is disabled for peer %d", peer.getId());
                 }
             }
         }else{
+        	System.out.println("Receive a heartbeat event for " + peer.getId() + " while no longer as a leader");
             this.logger.info("Receive a heartbeat event for %d while no longer as a leader", peer.getId());
         }
     }
@@ -617,6 +620,7 @@ public class RaftServer implements RaftMessageHandler {
             server.setNextLogIndex(this.logStore.getFirstAvailableIndex());
             server.setSnapshotInSync(null);
             server.setFree();
+            System.out.println(leader + " 成为leader后，开始向  " + server.getId() + " 进行心跳了");
             this.enableHeartbeatForPeer(server);
         }
 
