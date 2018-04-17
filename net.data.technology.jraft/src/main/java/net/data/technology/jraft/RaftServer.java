@@ -183,6 +183,7 @@ public class RaftServer implements RaftMessageHandler {
                 this.logger.error("Receive AppendEntriesRequest from another leader(%d) with same term, there must be a bug, server exits", request.getSource());
                 System.exit(-1);
             }else{
+            	System.out.println("server " + this.id + " 收到leader发送过来的心跳请求,request="+request);
                 this.restartElectionTimer();
             }
         }
