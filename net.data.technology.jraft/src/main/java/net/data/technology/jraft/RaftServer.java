@@ -643,6 +643,7 @@ public class RaftServer implements RaftMessageHandler {
     }
 
     private void becomeFollower(){
+    	System.out.println(this.id + " 成为follower了");
         // stop heartbeat for all peers
         for(PeerServer server : this.peers.values()){
             if(server.getHeartbeatTask() != null){
@@ -654,6 +655,7 @@ public class RaftServer implements RaftMessageHandler {
 
         this.serverToJoin = null;
         this.role = ServerRole.Follower;
+        System.out.println(this.id + " 成为follower了，然后又重新开始restartElectionTimer");
         this.restartElectionTimer();
     }
 
