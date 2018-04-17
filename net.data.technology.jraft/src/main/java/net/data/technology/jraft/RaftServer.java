@@ -402,6 +402,7 @@ public class RaftServer implements RaftMessageHandler {
     }
 
     private boolean requestAppendEntries(PeerServer peer){
+    	System.out.println("leader "+ this.id +" 给 " + peer.getId() + " 发送心跳消息");
         if(peer.makeBusy()){
             peer.SendRequest(this.createAppendEntriesRequest(peer))
                 .whenCompleteAsync((RaftResponseMessage response, Throwable error) -> {
