@@ -586,6 +586,7 @@ public class RaftServer implements RaftMessageHandler {
     }
 
     private void restartElectionTimer(){
+    	System.out.println("restartElectionTimer......");
         // don't start the election timer while this server is still catching up the logs
         if(this.catchingUp){
             return;
