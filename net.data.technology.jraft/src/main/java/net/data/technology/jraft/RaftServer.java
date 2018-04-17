@@ -602,6 +602,7 @@ public class RaftServer implements RaftMessageHandler {
         RaftParameters parameters = this.context.getRaftParameters();
         int electionTimeout = parameters.getElectionTimeoutLowerBound() + this.random.nextInt(parameters.getElectionTimeoutUpperBound() - parameters.getElectionTimeoutLowerBound() + 1);
         this.scheduledElection = this.context.getScheduledExecutor().schedule(this.electionTimeoutTask, electionTimeout, TimeUnit.MILLISECONDS);
+        System.out.println("选举tiemout schedule成功!!!");
     }
 
     private void stopElectionTimer(){
