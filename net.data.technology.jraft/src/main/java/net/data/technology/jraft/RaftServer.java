@@ -360,6 +360,7 @@ public class RaftServer implements RaftMessageHandler {
     }
 
     private void requestVote(){
+    	System.out.println("server " + id + " 开始请求Vote");
         // vote for self
         this.logger.info("requestVote started with term %d", this.state.getTerm());
         this.state.setVotedFor(this.id);
