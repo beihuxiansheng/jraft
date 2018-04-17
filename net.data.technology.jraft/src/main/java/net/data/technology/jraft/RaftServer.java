@@ -250,6 +250,7 @@ public class RaftServer implements RaftMessageHandler {
     }
 
     private synchronized RaftResponseMessage handleVoteRequest(RaftRequestMessage request){
+    	System.out.println("server " + this.id + " 接收到投票请求 , request=" + request);
         // we allow the server to be continue after term updated to save a round message
         this.updateTerm(request.getTerm());
 
